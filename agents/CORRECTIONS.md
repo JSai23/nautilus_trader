@@ -217,3 +217,40 @@ The engine doesn't iterate over instruments. It iterates over the data stream (a
 The strategy's `subscribe_book_deltas(instrument_id=X)` registers a subscription. If no data exists for X, the subscription exists but never fires. No error, no warning — just silence.
 
 **Required fix:** Add a clear note: "You can safely add more instruments than you have data for. The backtest engine only processes data that exists in the stream. Instruments without data are ignored — no errors, no overhead. This means you can define a broad universe of instruments and let the data availability determine which ones are actually active in the backtest."
+
+---
+
+## CORRECTION 9: Automate Metrics/Tearsheet/MLflow — Not the Analyst Agent's Job
+
+**Problem:** The plan puts result parsing, metrics computation, and report generation in the analyst agent's responsibilities. This is wrong. Metrics computation is deterministic — it should be automated in the runner script, not done by an LLM.
+
+**Required changes:**
+
+The **runner script** (deterministic, not LLM) should:
+1. Run the backtest via NautilusTrader
+2. Extract results using `ReportProvider` (positions, orders, fills, account reports)
+3. Generate a standardized tearsheet (PnL curve, drawdown, Sharpe, win rate, etc.)
+4. Log everything to MLflow: hyperparameters, metrics, tearsheet artifacts
+5. Write results to a known location on disk in a structured format
+
+The **analyst agent** (LLM) should ONLY:
+1. Read the already-computed tearsheet and metrics
+2. Interpret results (why did this strategy work/fail?)
+3. Propose next experiments based on patterns across runs
+4. Write analysis to state files
+
+**The boundary:** All number-crunching is deterministic and automated. The LLM reads finished reports and thinks about what to try next. It never computes metrics.
+
+**MLflow hosting:** The infra repo (separate from this codebase) needs to be updated to host and serve an MLflow tracking server. Add this as a prerequisite in the plan's implementation blocks — "MLflow server must be running and accessible before the agentic loop can log experiments."
+
+---
+
+## CORRECTION 10: Fix Agent Role Inconsistency — Pick One Model
+
+**Problem:** The plan uses two different agent models in different sections:
+- Section 1 ASCII diagram: **Researcher → Writer → Analyzer** (3 agents)
+- Section 6 (Agentic Loop Design): **Strategist + Analyst** (2 agents)
+
+These are contradictory. Pick one and use it consistently everywhere.
+
+**Required fix:** Use the **Strategist + Analyst** model from Section 6 (it's the better design — fewer handoffs, cleaner state contract). Update the Section 1 ASCII diagram to match. Remove all references to "Researcher" and "Writer" as separate agents. The Strategist does both research and writing. The Analyst interprets results and proposes next experiments.

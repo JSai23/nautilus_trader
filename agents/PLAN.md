@@ -1,46 +1,56 @@
-# System Plan: Polymarket Agentic Trading Framework v2
+# System Plan: Polymarket Agentic Trading Framework
 
 > **Plan type:** System plan (architecture and behavior)
-> **Status:** Draft v2.4 (final)
-> **Date:** 2026-03-09
-> **Base:** Built on [PLAN_run1.md](archive/PLAN_run1.md) (27 code-verified claims)
+> **Status:** Draft v3.2
+> **Date:** 2026-03-10
+> **Base:** Built on PLAN v2.4 (27 code-verified claims, 10 human-reviewed corrections applied, reviewer feedback addressed)
 
 ---
 
 ## 1. Problem & Scope
 
-We are building a **self-improving research loop** for trading on Polymarket prediction markets, powered by NautilusTrader. The system has two halves:
+We are building a **self-improving research playground** for trading on Polymarket prediction markets, powered by NautilusTrader. The system has two halves:
 
 - **Agentic layer:** LLM agents that design experiments, write strategy code, and analyze results.
 - **Deterministic execution layer:** NautilusTrader running strategies in backtest, paper, or live mode with zero LLM involvement.
 
-The critical invariant: **the LLM never touches the hot path.** Agents write code and configs. A deterministic script runs them through NautilusTrader. Results go to disk. Agents read the results.
+The critical invariant: **the LLM never touches the hot path.** Agents write code and configs. A deterministic runner script executes them through NautilusTrader, computes metrics, generates tearsheets, and logs everything to MLflow. Agents read the finished reports.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    AGENTIC RESEARCH LOOP                        │
 │                                                                 │
-│  ┌──────────────┐     ┌──────────────┐     ┌────────────────┐  │
-│  │  RESEARCHER   │────▶│   WRITER     │────▶│  EXPERIMENT    │  │
-│  │  AGENT        │     │   AGENT      │     │  CONFIG        │  │
-│  │              │     │              │     │  (strategy.py   │  │
-│  │ reads results │     │ writes strat │     │   + params.yml) │  │
-│  │ proposes ideas│     │ code + config│     │                │  │
-│  └──────────────┘     └──────────────┘     └───────┬────────┘  │
-│         ▲                                           │           │
-│         │                                           ▼           │
-│  ┌──────┴───────┐                          ┌───────────────┐   │
-│  │  ANALYZER     │◀─────results────────────│  RUNNER       │   │
-│  │  AGENT        │     (deterministic)      │  (bash script) │   │
-│  │               │                          │               │   │
-│  │ reads PnL,    │                          │ runs backtest │   │
-│  │ fills, logs   │                          │ or paper trade│   │
-│  │ writes report │                          │ via Nautilus  │   │
-│  │ logs to MLflow│                          │ NO LLM here  │   │
-│  └──────────────┘                          └───────────────┘   │
+│  ┌──────────────┐                        ┌────────────────┐    │
+│  │  STRATEGIST   │───────────────────────▶│  EXPERIMENT    │    │
+│  │  AGENT (LLM)  │                        │  CONFIG        │    │
+│  │               │                        │  (strategy.py   │    │
+│  │ reads results │                        │   + config.yml) │    │
+│  │ + analysis    │                        │                │    │
+│  │ writes strat  │                        └───────┬────────┘    │
+│  │ code + config │                                │             │
+│  └──────▲───────┘                                │             │
+│         │                                         ▼             │
+│  ┌──────┴───────┐                        ┌───────────────┐     │
+│  │  ANALYST      │◀──────results─────────│  RUNNER       │     │
+│  │  AGENT (LLM)  │  (tearsheet, metrics,  │  (Python, NO  │     │
+│  │               │   MLflow artifacts)    │   LLM)        │     │
+│  │ reads finished│                        │               │     │
+│  │ tearsheet +   │                        │ runs backtest │     │
+│  │ metrics       │                        │ computes PnL, │     │
+│  │ interprets    │                        │ Sharpe, etc.  │     │
+│  │ proposes next │                        │ logs to MLflow│     │
+│  │ experiments   │                        │ writes reports│     │
+│  └──────────────┘                        └───────────────┘     │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+### Scope: Two Tiers
+
+| Tier | What it covers |
+|------|---------------|
+| **v0** | What works today with zero changes — live trading, paper trading, instrument discovery, backtest engine. Warts and all. |
+| **v1** | Everything we build — PMXT data transformer, universe management, strategy base classes, market lifecycle handling, experiment runner with automated metrics/tearsheet/MLflow, the agentic loop. All Python-side, no Rust changes. |
 
 ### In Scope vs Out of Scope
 
@@ -49,9 +59,10 @@ The critical invariant: **the LLM never touches the hot path.** Agents write cod
 | Orderbook-driven and tick-driven Polymarket strategies | Strategies for non-Polymarket venues |
 | Backtest, paper trade, and live trade execution modes | Custom NautilusTrader Rust modifications |
 | Universe management (market discovery, filtering, rotation) | Building a new CLOB exchange adapter |
-| Experiment identity, logging, and comparison | Real-time portfolio optimization across venues |
-| Agentic loop: research → write → run → analyze → iterate | Training ML models (v3 extension only) |
-| Market lifecycle handling (discovery → trade → resolution) | Multi-account or multi-user trading |
+| PMXT historical data transformer for backtesting | Real-time portfolio optimization across venues |
+| Experiment identity, logging, and comparison (MLflow) | Training ML models |
+| Agentic loop: research → write → run → analyze → iterate | Multi-account or multi-user trading |
+| Market lifecycle handling (discovery → trade → resolution) | Continuous live data recording pipeline |
 
 ### Key Constraints
 
@@ -138,6 +149,8 @@ class MyStrategy(Strategy):
 - `self.order_factory` creates order objects. For Polymarket, always use `self.order_factory.limit()`.
 - The same class runs in backtest, paper, and live. The engine handles the plumbing.
 
+**Library freedom:** Strategies are plain Python — you can import any library (`numpy`, `pandas`, `sklearn`, `torch`, `polars`, etc). No sandboxing, no restrictions. Your strategy's callback methods (`on_order_book_deltas`, `on_trade_tick`, etc.) are normal Python methods — you can do whatever you want inside them, including calling ML models, computing features, logging to external services, or reading files. The only consideration is handler latency: in live/paper mode, a slow handler falls behind the data stream. In backtesting this doesn't matter (it's synchronous replay).
+
 ### 2.3 The Instrument
 
 An "instrument" in NautilusTrader is any tradeable asset — a stock, future, option, or in our case, a **BinaryOption**. Each Polymarket market produces two instruments (Yes token and No token).
@@ -185,7 +198,7 @@ This matters because:
 flowchart TD
     subgraph "Backtest Mode"
         BDE[BacktestEngine] --> BSE[SimulatedExchange]
-        BDE --> BDI[Data from disk<br/>parquet catalog]
+        BDE --> BDI[Data from disk<br/>parquet or iterator]
         BDI --> BSE
         BSE --> BSTRAT[Strategy]
     end
@@ -195,7 +208,6 @@ flowchart TD
         PTDC --> PTMB[MessageBus]
         PTMB --> PTSE[SandboxExecClient<br/>→ SimulatedExchange]
         PTMB --> PTSTRAT[Strategy]
-        PTMB -.->|optional| PTSW[StreamingFeatherWriter]
     end
 
     subgraph "Live Trading Mode"
@@ -203,13 +215,12 @@ flowchart TD
         LTDC --> LTMB[MessageBus]
         LTMB --> LTEC[PolymarketExecClient<br/>real CLOB API]
         LTMB --> LTSTRAT[Strategy]
-        LTMB -.->|optional| LTSW[StreamingFeatherWriter]
     end
 ```
 
 | Aspect | Backtest | Paper (Sandbox) | Live |
 |--------|----------|-----------------|------|
-| Data source | Recorded data from parquet catalog | Live Polymarket WebSocket | Live Polymarket WebSocket |
+| Data source | Historical data from parquet/iterator | Live Polymarket WebSocket | Live Polymarket WebSocket |
 | Order execution | SimulatedExchange (in-process) | SimulatedExchange (in-process, fed live data) | Polymarket CLOB API (real orders) |
 | Strategy code | **Identical** | **Identical** | **Identical** |
 | Risk | None (historical replay) | None (simulated fills) | Real money |
@@ -223,11 +234,9 @@ flowchart TD
 
 NautilusTrader can backtest any data you give it. But by default, the Polymarket adapter only provides **live** data via WebSocket — there is no built-in historical data endpoint. Without historical data, you cannot backtest. Without backtesting, the agentic loop cannot iterate quickly (each experiment takes real wall-clock time in paper trading).
 
-There are two paths to historical data:
-1. **PMXT flat file dumps** — hourly Parquet files of all Polymarket orderbook/trade data (external source)
-2. **Record-and-replay** — run paper trading with StreamingConfig to record live data, then replay it in backtest
+**PMXT flat file dumps** are our path to historical backtesting: hourly Parquet files of all Polymarket orderbook/trade data from an external source. We must build a transformer that converts PMXT's schema into NautilusTrader types — this is v1 work and the critical unblock for the entire research playground.
 
-This section covers both paths in detail.
+> NautilusTrader also supports recording live data via `StreamingConfig` for later replay (feather → parquet conversion), but that's a separate concern for production infrastructure, not our research playground. Our focus is PMXT historical dumps.
 
 ### 3.2 What PMXT Provides
 
@@ -246,13 +255,48 @@ NautilusTrader's BacktestEngine expects data in its own internal types. Here's w
 
 | NautilusTrader Type | What It Represents | How to Add It |
 |--------------------|--------------------|---------------|
-| `OrderBookDelta` | A single orderbook level change (add/update/delete at a price level) | `engine.add_data([delta1, delta2, ...])` |
-| `OrderBookDeltas` | A batch of deltas (snapshot or incremental update) | `engine.add_data([deltas1, deltas2, ...])` |
-| `TradeTick` | A single trade execution (price, size, aggressor side) | `engine.add_data([tick1, tick2, ...])` |
-| `QuoteTick` | A bid/ask quote update (best bid price/size, best ask price/size) | `engine.add_data([quote1, quote2, ...])` |
-| `Bar` | An OHLCV candle | `engine.add_data([bar1, bar2, ...])` |
+| `OrderBookDelta` | A single orderbook level change (add/update/delete at a price level) | `engine.add_data([delta1, ...])` or `engine.add_data_iterator(...)` |
+| `OrderBookDeltas` | A batch of deltas (snapshot or incremental update) | `engine.add_data([deltas1, ...])` or `engine.add_data_iterator(...)` |
+| `TradeTick` | A single trade execution (price, size, aggressor side) | `engine.add_data([tick1, ...])` |
+| `QuoteTick` | A bid/ask quote update (best bid price/size, best ask price/size) | `engine.add_data([quote1, ...])` |
+| `Bar` | An OHLCV candle | `engine.add_data([bar1, ...])` |
 
 PMXT provides raw Polymarket data in its own schema. **We must transform PMXT data → NautilusTrader types.**
+
+**Two ways to feed data into the BacktestEngine:**
+
+| Method | When to use | How it works |
+|--------|-------------|-------------|
+| `engine.add_data(list)` | Small datasets that fit in memory | Pass a Python list of data objects. Engine validates `instrument_id` against cache, sorts by `ts_init`, stores in memory. |
+| `engine.add_data_iterator(name, generator)` | Large datasets like PMXT (~12 GB/day) | Pass a Python generator that yields `list[Data]` chunks. Engine processes each batch lazily — no need to load everything into memory. |
+
+Source: `nautilus_trader/backtest/engine.pyx:860-950`
+
+**`add_data_iterator()` is the right choice for PMXT.** At 12 GB/day, loading everything into memory as Python objects is impractical. The iterator API lets us stream PMXT parquet files one at a time:
+
+```python
+from nautilus_trader.model.identifiers import ClientId
+
+def pmxt_data_generator(parquet_files, condition_id, instrument):
+    """Stream PMXT data without loading everything into memory."""
+    for parquet_file in sorted(parquet_files):
+        table = pq.read_table(parquet_file,
+            filters=[("condition_id", "==", condition_id)])
+        deltas = [pmxt_row_to_delta(row, instrument) for row in table.to_pylist()]
+        yield deltas  # list[OrderBookDelta], sorted by ts_init
+
+engine.add_data_iterator(
+    data_name="polymarket_orderbook",
+    generator=pmxt_data_generator(files, cid, instrument),
+    client_id=ClientId("POLYMARKET"),
+)
+```
+
+Key details about `add_data_iterator()`:
+- Generator yields batches; engine processes each batch then asks for the next — lazy evaluation
+- Data must be sorted by `ts_init` within each yielded batch
+- Unlike `add_data()`, this does NOT validate `instrument_id` against cache — you must still call `add_instrument()` first, but the data itself streams lazily
+- Source: `engine.pyx:920-950`
 
 ### 3.4 PMXT Schema Mapping (Requires Investigation)
 
@@ -316,14 +360,13 @@ TradeTick(
 )
 ```
 
-**The pipeline we need to build:**
+**The PMXT pipeline we build (v1):**
 
 ```mermaid
 flowchart LR
     PMXT["PMXT Parquet<br/>~500MB/hour"] --> FILTER["Filter by<br/>condition_id<br/>(PyArrow predicate)"]
-    FILTER --> TRANSFORM["Transform to<br/>NT types<br/>(Python script)"]
-    TRANSFORM --> CATALOG["Write to<br/>ParquetDataCatalog"]
-    CATALOG --> ENGINE["Load into<br/>BacktestEngine"]
+    FILTER --> TRANSFORM["Transform to<br/>NT types<br/>(Python)"]
+    TRANSFORM --> ENGINE["Feed to<br/>BacktestEngine<br/>via add_data_iterator()"]
 ```
 
 **Step 1: Filter** — PMXT files contain ALL markets. We only want specific condition_ids. PyArrow's predicate pushdown lets us filter without loading the entire file into memory:
@@ -363,23 +406,7 @@ def pmxt_row_to_delta(row, instrument) -> OrderBookDelta:
     )
 ```
 
-**Step 3: Load into BacktestEngine** — Either pass data directly or go through a `ParquetDataCatalog`.
-
-> **What is `ParquetDataCatalog`?** It's NautilusTrader's data storage layer — a thin wrapper around a directory of Parquet files. It organizes data by type and instrument in a tree: `{catalog_path}/data/{data_type}/{instrument_id}/`. You use it to: write transformed data (`catalog.write_data(deltas)`), query data back (`catalog.query(OrderBookDelta)`), convert feather recordings to parquet (`catalog.convert_stream_to_data()`), and list stored instruments (`catalog.instruments()`). It lives at `nautilus_trader/persistence/catalog/parquet.py`.
-
-```python
-# Option A: Direct loading (simpler, but all data in memory)
-deltas = [pmxt_row_to_delta(row, instrument) for row in filtered_table.to_pylist()]
-engine.add_data(deltas)
-
-# Option B: Catalog loading (scalable, supports time range queries and instrument discovery)
-from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
-
-catalog = ParquetDataCatalog("/data/polymarket")
-catalog.write_data(deltas)                         # Writes parquet files to data/{type}/{instrument}/
-loaded = catalog.query(OrderBookDelta)             # Reads them back, optionally filtered by time range
-engine.add_data(loaded)
-```
+**Step 3: Feed to BacktestEngine** — Use `add_data_iterator()` to stream transformed data lazily (see Section 3.3 above for the generator pattern). For small datasets, `add_data()` with a list works too.
 
 ### 3.5 PMXT Data: What We Know vs What We Must Investigate
 
@@ -393,116 +420,11 @@ engine.add_data(loaded)
 
 **First task before any PMXT integration:** Download one PMXT file, inspect its schema with `pq.read_schema()`, and document the exact column mapping. Everything else in this pipeline depends on knowing the schema.
 
-### 3.6 Alternative Path: Record-and-Replay
-
-The **simpler, already-working** path to backtesting is to record live data during paper trading and replay it later.
-
-**How StreamingConfig works:** NautilusTrader has a built-in data recording system. You enable it by adding one config flag to your TradingNode:
-
-```python
-from nautilus_trader.persistence.config import StreamingConfig
-
-config = TradingNodeConfig(
-    # ... other config ...
-    streaming=StreamingConfig(
-        catalog_path="/data/polymarket_catalog",   # Where to write files
-        flush_interval_ms=1000,                    # Flush to disk every 1 second
-    ),
-)
-```
-
-When enabled, the kernel creates a `StreamingFeatherWriter` that subscribes to `"*"` on the message bus (`kernel.py:587-605`). Every data event and execution event is captured and written to disk as Apache Arrow IPC (feather) files.
-
-**What gets recorded:**
-- All OrderBookDeltas (full L2 orderbook changes)
-- All QuoteTicks (bid/ask updates)
-- All TradeTicks (market trades)
-- All execution events (OrderFilled, OrderCanceled, etc.)
-- All instruments (BinaryOption definitions with their info dicts)
-
-**File structure created:**
-
-```
-/data/polymarket_catalog/
-└── sandbox/                          # environment name
-    └── a1b2c3d4-uuid/               # kernel instance ID
-        ├── config.json               # Full TradingNodeConfig saved at startup
-        ├── order_book_deltas/
-        │   └── 0x58b6...-7132....POLYMARKET/
-        │       └── 0x58b6...-7132....POLYMARKET_1709912345.feather
-        ├── quote_tick/
-        │   └── 0x58b6...-7132....POLYMARKET/
-        │       └── 0x58b6...-7132....POLYMARKET_1709912345.feather
-        ├── trade_tick/
-        │   └── 0x58b6...-7132....POLYMARKET/
-        │       └── 0x58b6...-7132....POLYMARKET_1709912345.feather
-        └── instrument_1709912345.feather
-```
-
-Source: `persistence/writer.py` — per-instrument data types (bar, order_book_deltas, quote_tick, trade_tick, etc.) get their own subdirectory with instrument-specific files. Non-per-instrument data (instruments, account events) get flat files.
-
-**The conversion step:** StreamingFeatherWriter writes `.feather` files. BacktestEngine reads `.parquet` files from a different directory structure. You must convert:
-
-```python
-from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
-from nautilus_trader.model.data import OrderBookDelta, QuoteTick, TradeTick
-
-catalog = ParquetDataCatalog("/data/polymarket_catalog")
-
-# Convert each data type from feather → parquet
-# instance_id is the UUID from the recording session
-catalog.convert_stream_to_data(
-    instance_id="a1b2c3d4-...",      # UUID of the recording session
-    data_cls=OrderBookDelta,          # Which data type to convert
-    subdirectory="sandbox",           # "sandbox" for paper trading, "live" for live
-)
-catalog.convert_stream_to_data(
-    instance_id="a1b2c3d4-...",
-    data_cls=QuoteTick,
-    subdirectory="sandbox",
-)
-catalog.convert_stream_to_data(
-    instance_id="a1b2c3d4-...",
-    data_cls=TradeTick,
-    subdirectory="sandbox",
-)
-```
-
-Source: `persistence/catalog/parquet.py` — `convert_stream_to_data()` reads feather files from `{catalog_path}/{subdirectory}/{instance_id}/{data_type}/{instrument}/*.feather`, applies timestamp monotonicity enforcement and bar type conversion, then writes parquet files to `{catalog_path}/data/{data_type}/{identifier}/{ts_range}.parquet`.
-
-After conversion, the directory looks like:
-
-```
-/data/polymarket_catalog/
-├── sandbox/...                       # Original feather recordings (can keep or delete)
-└── data/                             # Converted parquet (what BacktestEngine reads)
-    ├── order_book_delta/
-    │   └── 0x58b6...-7132....POLYMARKET/
-    │       └── 2026-03-09T14-00-00_2026-03-09T15-00-00.parquet
-    ├── quote_tick/
-    │   └── ...
-    └── trade_tick/
-        └── ...
-```
-
-### 3.7 Record-and-Replay vs PMXT: Comparison
-
-| Dimension | Record-and-Replay | PMXT Flat Files |
-|-----------|-------------------|-----------------|
-| **Data quality** | Tick-level, exactly what NautilusTrader sees | Hourly snapshots (granularity TBD) |
-| **Coverage** | Only markets you actively subscribe to | All active markets |
-| **Historical depth** | Only from when you start recording | Potentially months of history |
-| **Integration effort** | Low — config flag + conversion script | Medium — schema mapping + transformer |
-| **Works today?** | Recording: yes. Replay: needs conversion script | No — needs PMXT schema investigation + transformer |
-| **Best for** | Rapid iteration on specific markets | Broad backtesting across many markets |
-
-**Recommendation:** Start with record-and-replay (it works today). Build PMXT integration when you need broader historical coverage.
-
 ---
 
 ## 4. Required Capabilities
 
-This section covers each capability using the EXISTS/BUILD/BLOCKED format. For each: what NautilusTrader provides today, what we must build, and what's blocked.
+This section covers each capability using the EXISTS/BUILD format. For each: what NautilusTrader provides today (v0), and what we must build (v1).
 
 ### 4.1 Backtesting
 
@@ -584,6 +506,44 @@ account_df = reporter.generate_account_report(engine.trader.cache.account_for_ve
 engine.dispose()
 ```
 
+**How instruments and data are connected:** They're linked implicitly via the `instrument_id` field on each data object. When you call `add_data(data)`, the engine inspects the first element:
+
+1. If the data has an `instrument_id` attribute (`OrderBookDelta`, `TradeTick`, `QuoteTick`), the engine validates that this `instrument_id` already exists in the cache — **you MUST call `add_instrument()` first**, or `add_data()` raises an error.
+2. If the data is a `Bar`, the engine checks `bar_type.instrument_id` against the cache.
+3. All data goes into one sorted list. At runtime, when a strategy calls `subscribe_book_deltas(instrument_id=X)`, the engine registers subscription name `OrderBookDelta.X`, and the message bus routes matching events to the strategy's `on_order_book_deltas()` handler.
+
+**The connection is: (1) add instrument first, (2) add data second, (3) they're linked by `instrument_id` on the data objects, (4) the message bus routes data to strategy handlers based on subscriptions.**
+
+Source: `engine.pyx:860-918` — validation logic, `engine.pyx:907-914` — subscription name registration.
+
+**For large datasets, use `add_data_iterator()`:**
+
+```python
+from nautilus_trader.model.identifiers import ClientId
+
+# Process data lazily via generator instead of loading everything into memory
+def data_generator(parquet_files, condition_id, instrument):
+    """Yield batches of OrderBookDelta from PMXT parquet files."""
+    for pf in sorted(parquet_files):
+        table = pq.read_table(pf, filters=[("condition_id", "==", condition_id)])
+        deltas = [pmxt_row_to_delta(row, instrument) for row in table.to_pylist()]
+        yield deltas  # list[OrderBookDelta], must be sorted by ts_init
+
+engine.add_data_iterator(
+    data_name="polymarket_orderbook",
+    generator=data_generator(files, cid, instrument),
+    client_id=ClientId("POLYMARKET"),
+)
+```
+
+Use `add_data()` for small datasets (fits in memory). Use `add_data_iterator()` for large datasets like PMXT (~12 GB/day). The iterator yields batches lazily — the engine processes one batch, then asks the generator for the next.
+
+Source: `engine.pyx:920-950`
+
+**Instruments without data are inert:** You can safely add more instruments than you have data for. The BacktestEngine is entirely data-driven — it replays events from a sorted data stream chronologically. If you add an instrument but no data for it, that instrument simply never generates events. The strategy's handlers are never called for it. No error, no warning, no overhead. This means you can define a broad universe of instruments and let the data availability determine which ones are actually active in the backtest.
+
+Source: `engine.pyx:1300-1364`, `data_iterator.rs:80-106` — the engine iterates over the data stream (a priority queue / binary heap), not over instruments.
+
 **Key `add_venue()` parameters explained:**
 
 | Parameter | What it does | Polymarket setting |
@@ -599,25 +559,13 @@ engine.dispose()
 
 > This table shows the most relevant parameters for Polymarket. `add_venue()` has ~20 parameters total including `use_reduce_only`, `use_position_ids`, `use_random_ids`, `queue_position`, `allow_cash_borrowing`, `liquidity_consumption`, etc. See `engine.add_venue()` docstring for the full list.
 
-**For large datasets, use streaming mode:**
-
-```python
-# Process data in batches instead of loading everything into memory
-engine.add_strategy(strategy)
-for batch in data_batches:
-    engine.add_data(batch)
-    engine.run(streaming=True)   # Pauses at batch end
-    engine.clear_data()          # Free memory
-engine.end()                     # Finalize results
-```
-
 Source: `nautilus_trader/backtest/engine.pyx`
 
 **What exists:**
 - BacktestEngine with SimulatedExchange, full order matching
 - Configurable fill models (deterministic, probabilistic, partial fill, etc.)
 - Configurable fee models (maker/taker, fixed, per-contract)
-- Streaming mode for large datasets
+- `add_data_iterator()` for streaming large datasets lazily
 - Report generation (orders, fills, positions, account) as pandas DataFrames
 - BacktestResult with PnL stats, return stats, timing info
 
@@ -627,18 +575,11 @@ Source: `nautilus_trader/backtest/engine.pyx`
 
 #### WE MUST BUILD (v1)
 
-1. **PMXT data transformer** (medium effort) — Python module that reads PMXT Parquet files, filters by condition_id, and converts rows to `OrderBookDelta` / `TradeTick` objects. Depends on PMXT schema investigation.
+1. **PMXT data transformer** (medium effort) — Python module that reads PMXT Parquet files, filters by condition_id, and converts rows to `OrderBookDelta` / `TradeTick` objects. Feeds them to the engine via `add_data_iterator()`. Depends on PMXT schema investigation.
 
-2. **Feather-to-parquet conversion script** (small effort) — Thin wrapper around `catalog.convert_stream_to_data()` for the record-and-replay path. ~20 lines of Python.
+2. **Backtest runner script** (medium effort) — Python module that reads a `config.yml` (strategy class, parameters, instrument IDs, data path) and programmatically constructs a BacktestEngine, runs it, computes metrics via `ReportProvider`, generates a standardized tearsheet, logs to MLflow, and writes structured results to disk. This is the "Runner" in the agentic loop.
 
-3. **Backtest runner script** (medium effort) — Python module that reads a `config.yml` (strategy class, parameters, instrument IDs, data path) and programmatically constructs a BacktestEngine, runs it, and exports results to CSV. This is the "Runner" in the agentic loop.
-
-4. **Fee model override** (small effort) — Custom `FeeModel` that applies Polymarket's actual fees (0% for politics/long-duration, 10% maker+taker for hourly crypto). Pass to `engine.add_venue(fee_model=...)`.
-
-#### BLOCKED UNTIL (v2+)
-
-- **PMXT historical backfill** — We need to investigate PMXT data availability, schema, and download process before the PMXT pipeline can be built.
-- **Continuous data recording pipeline** — Automated, always-on recording of Polymarket data for growing the historical corpus. Requires infrastructure (server running 24/7).
+3. **Fee model override** (small effort) — Custom `FeeModel` that applies Polymarket's actual fees (0% for politics/long-duration, 10% maker+taker for hourly crypto). Pass to `engine.add_venue(fee_model=...)`.
 
 ### 4.2 Paper Trading
 
@@ -659,9 +600,8 @@ from nautilus_trader.adapters.sandbox.factory import SandboxLiveExecClientFactor
 from nautilus_trader.common import Environment
 from nautilus_trader.config import TradingNodeConfig, LoggingConfig
 from nautilus_trader.live.node import TradingNode
-from nautilus_trader.model.identifiers import TraderId
+from nautilus_trader.model.identifiers import TraderId, InstrumentId
 from nautilus_trader.model.currencies import USDC
-from nautilus_trader.persistence.config import StreamingConfig
 
 # Define which markets to trade (by condition_id + token_id)
 condition_id = "0xcccb7e7613a087c132b69cbf3a02bece3fdcb824c1da54ae79acc8d4a562d902"
@@ -691,10 +631,6 @@ config = TradingNodeConfig(
             book_type="L2_MBP",   # Feed live orderbook to SimulatedExchange
         ),
     },
-    streaming=StreamingConfig(
-        catalog_path="/data/polymarket_catalog",
-        flush_interval_ms=1000,
-    ),
 )
 
 # Build and run
@@ -726,7 +662,6 @@ sequenceDiagram
     participant SC as SandboxExecutionClient
     participant SE as SimulatedExchange
     participant ST as Strategy
-    participant SW as StreamingFeatherWriter
 
     Note over DC: Real live data from Polymarket
     WS->>DC: Book snapshot / PriceChange / Trade
@@ -738,9 +673,6 @@ sequenceDiagram
     and Sandbox intercepts data
         MB->>SC: on_data(deltas) — subscribed to data.*.POLYMARKET.*
         SC->>SE: process_order_book_deltas(deltas)
-    and Writer records data
-        MB->>SW: write(deltas) — subscribed to *
-        SW->>SW: Write to feather file on disk
     end
 
     Note over ST: Strategy decides to buy
@@ -765,7 +697,6 @@ Source: `nautilus_trader/adapters/sandbox/execution.py:195-225`
 **What exists:**
 - Full paper trading with live Polymarket data
 - SimulatedExchange that maintains orderbook and matches limit orders
-- Data recording via StreamingConfig (one config flag)
 - Support for L2 orderbook data in the simulated exchange
 - Configurable fill models and fee models on the sandbox exchange
 
@@ -783,10 +714,6 @@ Source: `nautilus_trader/adapters/sandbox/execution.py:195-225`
    - Limit-order enforcement: all entry and exit orders use `order_factory.limit()`
 
 2. **Fee model for Polymarket** (small effort) — Custom FeeModel that applies correct fees per market category.
-
-#### BLOCKED UNTIL (v2+)
-
-- **Polymarket-specific fill model** — SimulatedExchange uses a generic fill model. A more realistic model would account for Polymarket's actual liquidity dynamics, market maker rewards, and order queue position. Requires empirical analysis of fill data.
 
 ### 4.3 Live Trading
 
@@ -879,11 +806,6 @@ Source: `crates/adapters/polymarket/src/execution/mod.rs`
 
 Same PolymarketStrategy base class as paper trading — the limit-order exit mechanism is required for both modes.
 
-#### BLOCKED UNTIL (v2+)
-
-- **Wallet funding automation** — Currently requires manual USDC funding to the trading wallet. Automating this is out of scope.
-- **Multi-wallet support** — Trading across multiple wallets for position size management.
-
 ### 4.4 Universe Definition
 
 **What "universe" means here:** A Polymarket universe is the set of markets your strategy trades on. Unlike stocks (which persist indefinitely), Polymarket markets are ephemeral — they open, trade for hours/days/months, and resolve (one outcome wins). The universe rotates.
@@ -911,7 +833,11 @@ instrument_config = PolymarketInstrumentProviderConfig(
 )
 ```
 
-**Method 3: Event slug builder** — A callable that returns a list of event slugs. The provider fetches each event and loads all its markets:
+**Method 3: Event slug builder** — A callable that returns a list of event slugs. The provider fetches each event from the Gamma API and loads all its markets.
+
+**How `event_slug_builder` works (verified, `providers.py:43-156`, `slug_builders.py`):**
+
+The `event_slug_builder` is a config option on `PolymarketInstrumentProviderConfig`. You give it a fully qualified Python path to a function that returns `list[str]` — a list of Polymarket event slugs. When the instrument provider initializes (or refreshes), it calls your function, gets the slug list, then fetches each event from the Gamma API (`_fetch_event_by_slug`) to discover instruments. It extracts condition_id + token_ids from each event's markets and creates `BinaryOption` instruments. Missing slugs are handled gracefully (logs warning, continues).
 
 ```python
 # In your config:
@@ -921,6 +847,16 @@ instrument_config = PolymarketInstrumentProviderConfig(
 ```
 
 The provider calls `load_all_async()`, which checks for `event_slug_builder` first, then `use_gamma_markets`, else falls back to CLOB API pagination. Source: `nautilus_trader/adapters/polymarket/providers.py:102-177`.
+
+**IMPORTANT: `event_slug_builder` is a live/paper-only mechanism.** It calls the Gamma API at runtime to discover instruments. This does not work for backtesting — there's no live API during a backtest, no provider running. For backtesting, you must construct `BinaryOption` instruments yourself from PMXT metadata or cached instrument definitions and add them manually via `engine.add_instrument()`. Building instruments from PMXT data is part of the PMXT transformer (v1).
+
+| Mode | How instruments are discovered | `event_slug_builder` works? |
+|------|-------------------------------|--------------------------|
+| **Live** | Provider calls Gamma API at startup + refresh intervals | YES — this is what it was built for |
+| **Paper** | Same as live — provider calls Gamma API | YES — identical to live |
+| **Backtest** | Instruments must be added manually via `engine.add_instrument()` | **NO** — no API to call, no provider running. Construct instruments from PMXT data or pre-cached definitions. |
+
+Existing examples: `examples/live/polymarket/slug_builders.py` and `polymarket_slug_builder_tester.py`.
 
 > **IMPORTANT: Slug formats differ by market type and are discovered empirically.** Polymarket has no formal slug specification — slugs are human-readable strings that follow conventions per market category. Different market durations use completely different patterns. Always verify with `polymarket events list --tag <tag> -o json` before writing a slug builder. Examples:
 >
@@ -1005,6 +941,7 @@ Source: `nautilus_trader/adapters/polymarket/config.py`
 - No tag-based filtering (can't say "all markets tagged 'crypto'")
 - No volume/liquidity filtering at the provider level
 - No concept of market lifecycle — provider loads instruments but doesn't track resolution
+- `event_slug_builder` only works in live/paper mode (requires Gamma API) — useless for backtesting
 
 #### WE MUST BUILD (v1)
 
@@ -1027,10 +964,7 @@ resolution:
 
 3. **Slug builder library** (small effort) — Pre-built slug builders for common market types: hourly crypto, daily crypto, politics, sports.
 
-#### BLOCKED UNTIL (v2+)
-
-- **Tag-based Gamma API filtering** — The `events list --tag` CLI command works, but the adapter's InstrumentProvider doesn't support tag filtering natively. Building this requires either extending the provider or running CLI queries externally.
-- **Automatic market rotation** — Detecting when a market resolves and automatically discovering its replacement. Requires lifecycle integration (see 4.5).
+4. **Backtest instrument builder** (small effort) — Function that constructs `BinaryOption` instruments from PMXT metadata for backtesting, where `event_slug_builder` is unavailable. Part of the PMXT transformer.
 
 ### 4.5 Market Resolution / Lifecycle
 
@@ -1038,18 +972,70 @@ resolution:
 
 #### EXISTS TODAY (v0)
 
+NautilusTrader has several mechanisms a strategy can use today — with zero platform changes — to handle markets approaching resolution:
+
+**a) Price-threshold exit (works in v0):**
+
+Inside `on_order_book_deltas()`, check best bid/ask. If price converges past a threshold (e.g., bid > 0.95 or ask < 0.05), submit a limit order to exit:
+
+```python
+def on_order_book_deltas(self, deltas):
+    book = self.cache.order_book(deltas.instrument_id)
+    best_bid = book.best_bid_price()
+    if best_bid and float(best_bid) > 0.95:
+        # Market is resolving YES — exit via limit order
+        # NOTE: Do NOT use reduce_only=True — Polymarket rejects it in live mode.
+        # Instead, check position side explicitly.
+        position = self.cache.position(deltas.instrument_id)
+        if position and position.is_long:
+            self.submit_order(self.order_factory.limit(
+                instrument_id=deltas.instrument_id,
+                order_side=OrderSide.SELL,
+                quantity=position.quantity,
+                price=self.cache.instrument(deltas.instrument_id).make_price(float(best_bid)),
+                time_in_force=TimeInForce.FOK,
+            ))
+```
+
+**b) Time-based exit (works in v0):**
+
+`BinaryOption` has `expiration_ns` (parsed from Polymarket's `end_date` at `parse.rs:185`). Strategy can check `self.clock.utc_now()` against the instrument's expiration and exit before resolution. However: some markets have `expiration_ns = 0` (no end_date set — the parser uses `.unwrap_or_default()`). The strategy must handle this case.
+
+**c) No-quotes detection (works in v0):**
+
+If the orderbook empties (no bids or asks), `book.best_bid_price()` returns `None`. Strategy can detect this:
+
+```python
+if book.best_bid_price() is None and book.best_ask_price() is None:
+    # Book is empty — market may be resolving or illiquid
+    self.log.warning("Empty orderbook — possible resolution")
+```
+
+**d) `InstrumentClose` / `InstrumentStatus` events (exists in NT, unverified for Polymarket):**
+
+NautilusTrader has `on_instrument_close()` and `on_instrument_status()` handlers (`data_actor.rs:398-408`). Strategies can subscribe via `subscribe_instrument_status()` / `subscribe_instrument_close()`. However — it's unclear whether the Polymarket adapter ever emits these events. This needs verification. If it doesn't, these handlers are useless for Polymarket.
+
+**e) What happens to positions you DON'T sell:**
+
+| Mode | What happens |
+|------|-------------|
+| **Backtest** | The backtest simply ends. Positions remain open. PnL report shows unrealized PnL. No automatic settlement. |
+| **Live** | Position stays on Polymarket. When the market resolves, Polymarket settles CTF tokens — winning tokens become redeemable for USDC. NautilusTrader won't know about this automatically. |
+| **Paper** | SimulatedExchange doesn't simulate resolution. Position stays open with last known price. |
+
+**Summary:** Mechanisms (a-c) work today with zero changes. (d) might work but needs verification. (e) explains what happens if you do nothing. A well-designed strategy should implement a-c as part of its core logic — this is fundamental strategy design, not an extension.
+
+**Additional v0 details:**
 - **Expiration timestamp:** Each BinaryOption instrument has `expiration_ns` — a UNIX nanosecond timestamp of when the market ends. Parsed from the Polymarket `end_date` field. Source: `crates/adapters/polymarket/src/http/parse.rs:185`.
-
-- **Edge case:** Markets without an `end_date` get `expiration_ns = 0` (the parser uses `.unwrap_or_default()`). This happens for some open-ended markets. Strategies must check for this.
-
+- **Edge case:** Markets without an `end_date` get `expiration_ns = 0`. This happens for some open-ended markets. Strategies must check for this.
 - **Price data near resolution:** As a market approaches resolution, one side's liquidity dries up. The adapter's `drop_quotes_missing_side` config (default `true`) drops quote ticks when bid or ask is missing, preventing strategies from seeing stale quotes.
-
 - **No resolution event:** The Polymarket adapter does not currently emit an `InstrumentStatus` event when a market resolves. The strategy has no built-in notification that a market is closing.
 
 **What exists:**
 - `instrument.expiration_ns` available for timer-based exit
 - `drop_quotes_missing_side` prevents stale data near resolution
 - `instrument.info["outcome"]` tells you whether this is the Yes or No token
+- Price-threshold, time-based, and no-quotes exit mechanisms — all work in v0
 
 **Limitations:**
 - No `InstrumentStatus` event on market resolution
@@ -1065,7 +1051,7 @@ stateDiagram-v2
     [*] --> Subscribed: on_start() subscribes to data
     Subscribed --> Trading: First data received
     Trading --> Trading: Normal operations
-    Trading --> Exiting: Resolution timer fires OR price > 0.95 / < 0.05
+    Trading --> Exiting: Resolution timer fires OR price > 0.95 / < 0.05 OR book empty
     Exiting --> Resolved: Position closed via limit FOK
     Exiting --> Resolved: FOK failed, position held through resolution
     Resolved --> [*]: Market removed from active set
@@ -1108,11 +1094,6 @@ def on_quote_tick(self, tick):
         self.log.warning(f"Price convergence detected: {mid}")
         self._exit_position()
 ```
-
-#### BLOCKED UNTIL (v2+)
-
-- **InstrumentStatus events** — The adapter could emit these when the CLOB API shows `accepting_orders: false` or `closed: true`. Requires Rust adapter changes.
-- **Automatic universe rotation** — Detecting resolution and discovering replacement markets without human intervention.
 
 ### 4.6 Strategy Parameterization
 
@@ -1196,64 +1177,36 @@ parameter_space:
   exit_before_resolution_mins: {type: int, min: 1, max: 30}
 ```
 
-#### BLOCKED UNTIL (v2+)
-
-- **Bayesian hyperparameter optimization** — Automated search over parameter space using prior results to guide exploration.
-
 ---
 
 ## 5. Deep Dives — Concrete Walkthroughs
 
-### 5.1 "I want to backtest a strategy against recorded Polymarket data"
+### 5.1 "I want to backtest a strategy against PMXT historical data"
 
-**Prerequisites:** You have previously run a paper trading session with StreamingConfig enabled, recording data to `/data/polymarket_catalog/`.
+**Prerequisites:** You have PMXT Parquet files downloaded, and the PMXT transformer module built (v1 Block 4).
 
-**Step 1: Find your recording session ID**
-
-```python
-import os
-catalog_path = "/data/polymarket_catalog"
-sessions = os.listdir(f"{catalog_path}/sandbox/")
-print(sessions)  # ['a1b2c3d4-e5f6-...', 'b2c3d4e5-f6a7-...']
-```
-
-**Step 2: Convert feather recordings to parquet**
+**Step 1: Inspect the PMXT schema** (first time only)
 
 ```python
-from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
-from nautilus_trader.model.data import OrderBookDelta, QuoteTick, TradeTick
+import pyarrow.parquet as pq
 
-catalog = ParquetDataCatalog(catalog_path)
-
-instance_id = "a1b2c3d4-e5f6-..."  # Your recording session
-
-# Convert each data type
-for data_cls in [OrderBookDelta, QuoteTick, TradeTick]:
-    catalog.convert_stream_to_data(
-        instance_id=instance_id,
-        data_cls=data_cls,
-        subdirectory="sandbox",
-    )
-    print(f"Converted {data_cls.__name__}")
+schema = pq.read_schema("polymarket_orderbook_2026-03-09T14.parquet")
+print(schema)
+# Reveals column names, types — this drives the transformer implementation
 ```
 
-After this, you'll have parquet files at:
-```
-/data/polymarket_catalog/data/order_book_delta/0x58b6...-7132....POLYMARKET/...parquet
-/data/polymarket_catalog/data/quote_tick/0x58b6...-7132....POLYMARKET/...parquet
-/data/polymarket_catalog/data/trade_tick/0x58b6...-7132....POLYMARKET/...parquet
-```
+**Step 2: Build instruments from PMXT metadata**
 
-**Step 3: Load instruments from the catalog**
+For backtesting, `event_slug_builder` is unavailable (no live API). You must construct instruments from PMXT data or pre-cached definitions:
 
 ```python
-instruments = catalog.instruments()
-# Returns list of BinaryOption objects with full metadata (info dict preserved)
-for inst in instruments:
-    print(f"{inst.id}: {inst.info.get('outcome', '?')} — expires {inst.expiration_utc}")
+from nautilus_trader.model.instruments import BinaryOption
+# Construct BinaryOption instruments from PMXT metadata
+# (exact fields depend on PMXT schema — to be determined after investigation)
+yes_instrument = build_instrument_from_pmxt(condition_id, token_id, metadata)
 ```
 
-**Step 4: Run the backtest**
+**Step 3: Set up the BacktestEngine**
 
 ```python
 from nautilus_trader.backtest.engine import BacktestEngine
@@ -1261,7 +1214,7 @@ from nautilus_trader.backtest.config import BacktestEngineConfig
 from nautilus_trader.model.enums import AccountType, OmsType, BookType
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.currencies import USDC
-from nautilus_trader.model.identifiers import Venue, TraderId
+from nautilus_trader.model.identifiers import Venue, TraderId, ClientId
 from decimal import Decimal
 
 # Create engine
@@ -1277,20 +1230,45 @@ engine.add_venue(
     account_type=AccountType.CASH,
     starting_balances=[Money(10_000, USDC)],
     book_type=BookType.L2_MBP,
+    reject_stop_orders=True,
 )
 
-# Add instruments
-for inst in instruments:
-    engine.add_instrument(inst)
+# Add instruments (you can add more than you have data for — extras are inert)
+engine.add_instrument(yes_instrument)
+engine.add_instrument(no_instrument)
+```
 
-# Load data from catalog
-deltas = catalog.query(OrderBookDelta)
-engine.add_data(deltas)
+**Step 4: Stream PMXT data via `add_data_iterator()`**
 
-# Add strategy
-target_instrument = instruments[0]
+```python
+import pyarrow.parquet as pq
+from pathlib import Path
+
+pmxt_dir = Path("/data/pmxt/")
+parquet_files = sorted(pmxt_dir.glob("polymarket_orderbook_*.parquet"))
+target_condition_id = "0xcccb7e76..."
+
+def pmxt_data_generator(parquet_files, condition_id, instrument):
+    """Stream PMXT data lazily — one file at a time."""
+    for pf in parquet_files:
+        table = pq.read_table(pf, filters=[("condition_id", "==", condition_id)])
+        if table.num_rows == 0:
+            continue
+        deltas = [pmxt_row_to_delta(row, instrument) for row in table.to_pylist()]
+        yield sorted(deltas, key=lambda d: d.ts_init)
+
+engine.add_data_iterator(
+    data_name="pmxt_orderbook",
+    generator=pmxt_data_generator(parquet_files, target_condition_id, yes_instrument),
+    client_id=ClientId("POLYMARKET"),
+)
+```
+
+**Step 5: Add strategy and run**
+
+```python
 strategy = ImbalanceStrategy(config=ImbalanceStrategyConfig(
-    instrument_id=target_instrument.id,
+    instrument_id=yes_instrument.id,
     trade_size=Decimal("10.0"),
     imbalance_threshold=0.25,
 ))
@@ -1304,8 +1282,7 @@ result = engine.get_result()
 print(f"PnL: {result.stats_pnls}")
 print(f"Orders: {result.total_orders}, Positions: {result.total_positions}")
 
-# Detailed reports — use ReportProvider for consistent reporting across
-# both BacktestEngine and TradingNode (same pattern as runner.py in Section 6.3)
+# Detailed reports via ReportProvider
 from nautilus_trader.analysis.reporter import ReportProvider
 reporter = ReportProvider()
 orders = list(engine.trader.cache.orders())
@@ -1314,7 +1291,7 @@ positions = list(engine.trader.cache.positions())
 orders_report = reporter.generate_order_fills_report(orders)
 positions_report = reporter.generate_positions_report(positions)
 
-# Save to CSV for the analyzer agent
+# Save to CSV for the analyst agent
 orders_report.to_csv("results/orders.csv")
 positions_report.to_csv("results/positions.csv")
 
@@ -1403,7 +1380,6 @@ from nautilus_trader.adapters.sandbox.factory import SandboxLiveExecClientFactor
 from nautilus_trader.config import TradingNodeConfig, LoggingConfig
 from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import TraderId, InstrumentId
-from nautilus_trader.persistence.config import StreamingConfig
 from decimal import Decimal
 
 # Your market IDs
@@ -1430,7 +1406,6 @@ config = TradingNodeConfig(
             book_type="L2_MBP",
         ),
     },
-    streaming=StreamingConfig(catalog_path="/data/polymarket_catalog"),
 )
 
 node = TradingNode(config=config)
@@ -1453,7 +1428,7 @@ finally:
     node.dispose()
 ```
 
-**Step 4: Run it.** `python run_paper.py` — it connects to Polymarket's WebSocket, streams live orderbook data, and your strategy trades against the simulated exchange. Data is recorded to `/data/polymarket_catalog/` for later backtesting.
+**Step 4: Run it.** `python run_paper.py` — it connects to Polymarket's WebSocket, streams live orderbook data, and your strategy trades against the simulated exchange.
 
 ### 5.3 "I want to define a universe of hourly crypto markets and trade them"
 
@@ -1526,51 +1501,23 @@ config = TradingNodeConfig(
 
 **Fee warning:** Hourly crypto markets charge **10% maker + 10% taker fees** with zero rewards. A round-trip costs ~20% of position value. Only strategies with very high edge (>20% per trade) are profitable here. Consider starting with zero-fee markets (politics, long-duration crypto) for framework validation.
 
-### 5.4 "I want to record live Polymarket data for later backtesting"
-
-This is the simplest walkthrough — it's just a config flag.
-
-**Step 1: Add StreamingConfig to any TradingNode:**
-
-```python
-config = TradingNodeConfig(
-    # ... data_clients, exec_clients ...
-    streaming=StreamingConfig(
-        catalog_path="/data/polymarket_catalog",
-        flush_interval_ms=1000,       # Flush to disk every second
-    ),
-)
-```
-
-**Step 2: Run paper trading.** The StreamingFeatherWriter automatically subscribes to `"*"` on the message bus and writes every event to disk. You don't need to change any strategy code.
-
-**Step 3: Check what was recorded:**
-
-```bash
-ls /data/polymarket_catalog/sandbox/
-# Shows instance UUIDs for each session
-
-ls /data/polymarket_catalog/sandbox/<instance_id>/
-# Shows: order_book_deltas/  quote_tick/  trade_tick/  instrument_*.feather  config.json
-```
-
-**Step 4: Convert for backtesting** (see walkthrough 5.1, step 2).
-
-**Data sizes:** Expect ~1-5 MB per instrument per hour for orderbook deltas (depends on market activity). A 24-hour recording of 10 instruments might produce 200-500 MB of feather data.
-
 ---
 
 ## 6. Agentic Research Loop Design
 
-### 6.1 Agent Roles
+### 6.1 Roles and Responsibilities
 
-| Role | Type | What It Does |
-|------|------|-------------|
-| **Strategist** | LLM Agent (worker) | Reads previous results and memory. Proposes hypotheses. Writes strategy code if needed. Writes experiment `config.yml` with specific parameters. |
-| **Runner** | Python Script (deterministic) | Reads `config.yml`. Builds BacktestEngine or TradingNode. Runs the strategy. Exports reports to CSV. Zero LLM involvement. |
-| **Analyst** | LLM Agent (reviewer) | Reads raw CSV results. Computes PnL, Sharpe, drawdown, win rate. Writes structured `performance.json` and `analysis.md`. Critiques the Strategist's choices. Suggests next direction. |
+The system has three components: two LLM agents and one deterministic script. The boundary between them is strict: **all number-crunching is deterministic and automated; the LLM reads finished reports and thinks about what to try next.**
+
+| Component | Type | Responsibilities |
+|-----------|------|-----------------|
+| **Strategist** | LLM Agent | Reads previous analysis and memory. Proposes hypotheses. Writes strategy code if needed. Writes experiment `config.yml` with specific parameters. |
+| **Runner** | Python Script (deterministic, NO LLM) | Reads `config.yml`. Builds BacktestEngine or TradingNode. Runs the strategy. Extracts results via `ReportProvider`. Computes metrics (PnL, Sharpe, drawdown, win rate). Generates standardized tearsheet. Logs hyperparams, metrics, and artifacts to MLflow. Writes structured results to disk. |
+| **Analyst** | LLM Agent | Reads the **already-computed** tearsheet and metrics. Interprets results (why did this strategy work/fail?). Proposes next experiments based on patterns across runs. Writes analysis to state files. Critiques the Strategist's choices. |
 
 **Why two LLM agents, not one:** The Strategist and Analyst have fundamentally different objectives — one generates experiments, the other evaluates them critically. Combining both risks confirmation bias (the agent that chose the parameters also evaluates them).
+
+**Why the runner handles all metrics:** Metrics computation is deterministic — PnL curves, Sharpe ratios, drawdown calculations, win rates. These must be computed by code, not an LLM. The LLM is for interpretation ("this strategy had a 0.8 Sharpe but 40% drawdown — the risk is too high for the return") and creative next-steps ("try reducing position size near resolution time").
 
 ### 6.2 State Contract
 
@@ -1585,13 +1532,13 @@ experiments/
 │   │   ├── fills.csv             # Runner: from ReportProvider.generate_order_fills_report()
 │   │   ├── positions.csv         # Runner: from ReportProvider.generate_positions_report()
 │   │   ├── account.csv           # Runner: from ReportProvider.generate_account_report()
-│   │   ├── metadata.json         # Runner: timing, exit code, errors
-│   │   ├── performance.json      # Analyst: computed metrics
-│   │   └── analysis.md           # Analyst: human-readable analysis
+│   │   ├── tearsheet.json        # Runner: computed metrics (Sharpe, PnL, drawdown, etc.)
+│   │   ├── metadata.json         # Runner: timing, config snapshot, exit code
+│   │   └── analysis.md           # Analyst: interpretation and next-steps
 │   └── ...
 ├── strategies/
-│   ├── imbalance_v1.py           # Written by Strategist (or predefined)
-│   └── spread_v1.py
+│   ├── imbalance_iter1.py        # Written by Strategist (or predefined)
+│   └── spread_iter1.py           # Iteration suffix (_iter1, _iter2) — NOT scope tiers
 ├── MEMORY.md                     # Append-only decision log (all agents)
 ├── PROGRESS.md                   # Current state snapshot
 └── TODO.md                       # What to do next
@@ -1599,7 +1546,7 @@ experiments/
 
 ### 6.3 The Runner Script
 
-The runner is the critical bridge between agents and NautilusTrader. It's a single Python module — no code generation, no templates:
+The runner is the critical bridge between agents and NautilusTrader. It's a single Python module — no code generation, no templates. It handles everything from running the backtest to computing metrics and logging to MLflow.
 
 ```mermaid
 flowchart LR
@@ -1608,10 +1555,14 @@ flowchart LR
     PARSE --> IMPORT["StrategyFactory.create()<br/>to instantiate strategy"]
     IMPORT --> BUILD{Mode?}
     BUILD -->|backtest| BT[BacktestEngine<br/>+ add_venue + add_data<br/>+ add_strategy + run]
-    BUILD -->|paper| PT[TradingNode<br/>SANDBOX mode<br/>+ StreamingConfig + run]
+    BUILD -->|paper| PT[TradingNode<br/>SANDBOX mode + run]
     BT --> REPORT[ReportProvider<br/>.generate_*_report]
     PT --> REPORT
-    REPORT --> CSV[.to_csv → results/run_id/]
+    REPORT --> METRICS[Compute metrics:<br/>Sharpe, drawdown,<br/>win rate, PnL curve]
+    METRICS --> TEARSHEET[Write tearsheet.json]
+    METRICS --> MLFLOW[Log to MLflow:<br/>params, metrics,<br/>artifacts]
+    TEARSHEET --> DISK[results/run_id/]
+    MLFLOW --> DISK
 ```
 
 **config.yml format:**
@@ -1626,7 +1577,7 @@ experiment:
     trade_size: "10.0"
     imbalance_threshold: 0.25
   execution_mode: "backtest"           # backtest | paper
-  data_source: "/data/polymarket_catalog"
+  data_source: "/data/pmxt/"
   duration_seconds: 3600               # For paper trading: how long to run
 ```
 
@@ -1646,19 +1597,18 @@ from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.enums import AccountType, OmsType, BookType
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.currencies import USDC
-from nautilus_trader.model.identifiers import TraderId
+from nautilus_trader.model.identifiers import TraderId, ClientId
 from nautilus_trader.model.data import OrderBookDelta, QuoteTick, TradeTick
-from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
-from nautilus_trader.persistence.config import StreamingConfig
 from nautilus_trader.trading.config import ImportableStrategyConfig, StrategyFactory
 from nautilus_trader.adapters.polymarket import POLYMARKET, PolymarketDataClientConfig, PolymarketLiveDataClientFactory
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENUE
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProviderConfig
 from nautilus_trader.adapters.sandbox.config import SandboxExecutionClientConfig
 from nautilus_trader.adapters.sandbox.factory import SandboxLiveExecClientFactory
+from nautilus_trader.analysis.reporter import ReportProvider
 
 def build_backtest_engine(exp: dict):
-    """Build a BacktestEngine from experiment config. Uses code from Section 4.1."""
+    """Build a BacktestEngine from experiment config."""
     engine = BacktestEngine(config=BacktestEngineConfig(
         trader_id=TraderId(f"BT-{exp['run_id'][:8]}"),
         logging=LoggingConfig(log_level="INFO"),
@@ -1673,18 +1623,20 @@ def build_backtest_engine(exp: dict):
         reject_stop_orders=True,
     )
 
-    # Load instruments and data from catalog
-    catalog = ParquetDataCatalog(exp["data_source"])
-    for inst in catalog.instruments():
+    # Load instruments and data from PMXT via add_data_iterator()
+    # (exact implementation depends on PMXT transformer — see Block 4)
+    from pmxt_transformer import load_instruments, pmxt_data_generator
+    instruments = load_instruments(exp["data_source"], exp["parameters"]["instrument_id"])
+    for inst in instruments:
         engine.add_instrument(inst)
 
-    for data_cls in [OrderBookDelta, QuoteTick, TradeTick]:
-        data = catalog.query(data_cls)
-        if data:
-            engine.add_data(data)
+    engine.add_data_iterator(
+        data_name="pmxt_orderbook",
+        generator=pmxt_data_generator(exp["data_source"], instruments),
+        client_id=ClientId("POLYMARKET"),
+    )
 
     # Create strategy via StrategyFactory — handles type coercion correctly
-    # (see Section 4.6 for why direct ConfigClass(**params) is wrong)
     strategy = StrategyFactory.create(ImportableStrategyConfig(
         strategy_path=exp["strategy_class"],
         config_path=exp["strategy_config_class"],
@@ -1695,10 +1647,8 @@ def build_backtest_engine(exp: dict):
     return engine
 
 def build_paper_node(exp: dict):
-    """Build a TradingNode in sandbox mode. Uses code from Section 4.2."""
-    # Extract instrument IDs from parameters
+    """Build a TradingNode in sandbox mode."""
     instrument_id_str = exp["parameters"]["instrument_id"]
-    # Strip the ".POLYMARKET" suffix if present for the load_ids set
     load_id = instrument_id_str.replace(".POLYMARKET", "")
 
     node_config = TradingNodeConfig(
@@ -1720,11 +1670,9 @@ def build_paper_node(exp: dict):
                 book_type="L2_MBP",
             ),
         },
-        streaming=StreamingConfig(catalog_path=exp.get("data_source", "/data/polymarket_catalog")),
     )
 
     node = TradingNode(config=node_config)
-    # Create strategy via StrategyFactory — handles type coercion correctly
     strategy = StrategyFactory.create(ImportableStrategyConfig(
         strategy_path=exp["strategy_class"],
         config_path=exp["strategy_config_class"],
@@ -1736,21 +1684,67 @@ def build_paper_node(exp: dict):
 
     return node
 
-def export_reports(trader, results_dir: str):
-    """Export NautilusTrader reports to CSV files."""
+def compute_tearsheet(trader, results_dir: str) -> dict:
+    """
+    Extract reports via ReportProvider and compute standardized metrics.
+    Returns the tearsheet dict (also written to disk).
+    """
     orders = list(trader.cache.orders())
     positions = list(trader.cache.positions())
-
-    from nautilus_trader.analysis.reporter import ReportProvider
-    from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENUE
     reporter = ReportProvider()
 
-    reporter.generate_orders_report(orders).to_csv(f"{results_dir}/orders.csv")
-    reporter.generate_order_fills_report(orders).to_csv(f"{results_dir}/fills.csv")
-    reporter.generate_positions_report(positions).to_csv(f"{results_dir}/positions.csv")
+    # Generate and save raw reports
+    orders_report = reporter.generate_orders_report(orders)
+    fills_report = reporter.generate_order_fills_report(orders)
+    positions_report = reporter.generate_positions_report(positions)
+    orders_report.to_csv(f"{results_dir}/orders.csv")
+    fills_report.to_csv(f"{results_dir}/fills.csv")
+    positions_report.to_csv(f"{results_dir}/positions.csv")
+
     account = trader.cache.account_for_venue(POLYMARKET_VENUE)
     if account:
         reporter.generate_account_report(account).to_csv(f"{results_dir}/account.csv")
+
+    # Compute metrics from reports
+    total_pnl = float(positions_report["realized_pnl"].sum()) if len(positions_report) > 0 else 0.0
+    num_trades = len(fills_report)
+    num_positions = len(positions_report)
+    win_count = int((positions_report["realized_pnl"] > 0).sum()) if num_positions > 0 else 0
+    win_rate = win_count / num_positions if num_positions > 0 else 0.0
+
+    tearsheet = {
+        "total_pnl": total_pnl,
+        "num_trades": num_trades,
+        "num_positions": num_positions,
+        "win_rate": win_rate,
+        "win_count": win_count,
+        "loss_count": num_positions - win_count,
+        # Additional metrics (Sharpe, max drawdown, etc.) computed from PnL series
+        # when sufficient data is available
+    }
+
+    with open(f"{results_dir}/tearsheet.json", "w") as f:
+        json.dump(tearsheet, f, indent=2)
+
+    return tearsheet
+
+def log_to_mlflow(exp: dict, tearsheet: dict, results_dir: str):
+    """Log experiment to MLflow tracking server."""
+    import mlflow
+
+    with mlflow.start_run(run_name=exp["run_id"]):
+        # Log hyperparameters
+        mlflow.log_params(exp["parameters"])
+        mlflow.log_param("strategy_class", exp["strategy_class"])
+        mlflow.log_param("execution_mode", exp["execution_mode"])
+
+        # Log computed metrics
+        for key, value in tearsheet.items():
+            if isinstance(value, (int, float)):
+                mlflow.log_metric(key, value)
+
+        # Log artifacts (CSV reports, tearsheet)
+        mlflow.log_artifacts(results_dir)
 
 def run_experiment(config_path: str):
     with open(config_path) as f:
@@ -1763,28 +1757,23 @@ def run_experiment(config_path: str):
     if exp["execution_mode"] == "backtest":
         engine = build_backtest_engine(exp)
         engine.run()
-        export_reports(engine.trader, results_dir)
+        tearsheet = compute_tearsheet(engine.trader, results_dir)
         engine.dispose()
 
     elif exp["execution_mode"] == "paper":
         node = build_paper_node(exp)
         node.build()
 
-        # Use a daemon timer thread to gracefully stop the node after duration_seconds.
-        # node.stop() is the correct method — it signals the trading node to shut down
-        # gracefully, allowing the finally block to export reports.
-        # We do NOT use signal.alarm() because SIGALRM kills the process by default
-        # without raising a Python exception, and is not asyncio-safe.
         import threading
         duration = exp.get("duration_seconds", 3600)
         timer = threading.Timer(duration, lambda: node.stop())
-        timer.daemon = True   # Don't block process exit
+        timer.daemon = True
         timer.start()
         try:
-            node.run()   # Blocks until node.stop() is called (by timer or Ctrl+C)
+            node.run()
         finally:
             timer.cancel()
-            export_reports(node.trader, results_dir)
+            tearsheet = compute_tearsheet(node.trader, results_dir)
             node.dispose()
 
     # Write metadata
@@ -1794,6 +1783,12 @@ def run_experiment(config_path: str):
             "config": exp,
             "completed_at": datetime.now(UTC).isoformat(),
         }, f, indent=2)
+
+    # Log to MLflow (requires MLflow tracking server — see prerequisites)
+    try:
+        log_to_mlflow(exp, tearsheet, results_dir)
+    except Exception as e:
+        print(f"MLflow logging failed (server may not be running): {e}")
 
 if __name__ == "__main__":
     import sys
@@ -1808,21 +1803,25 @@ sequenceDiagram
     participant RUN as Runner (Python)
     participant A as Analyst Agent
     participant FS as Filesystem
+    participant ML as MLflow
 
     Note over S: Reads MEMORY.md, previous analysis.md
-    S->>FS: Write strategies/imbalance_v2.py (if new code needed)
+    S->>FS: Write strategies/imbalance_iter2.py (if new code needed)
     S->>FS: Write config.yml (strategy class, params, mode)
     S->>FS: Update MEMORY.md (rationale for choices)
 
     Note over RUN: Reads config.yml — zero LLM involvement
     RUN->>RUN: Import strategy class, build engine
-    RUN->>RUN: Load data (backtest) or connect (paper)
+    RUN->>RUN: Load data (PMXT iterator) or connect (paper)
     RUN->>RUN: Run strategy, capture results
-    RUN->>FS: Write results/{run_id}/*.csv + metadata.json
+    RUN->>RUN: Compute metrics via ReportProvider
+    RUN->>RUN: Generate tearsheet (PnL, Sharpe, drawdown, win rate)
+    RUN->>FS: Write results/{run_id}/*.csv + tearsheet.json + metadata.json
+    RUN->>ML: Log params, metrics, artifacts to MLflow
 
-    Note over A: Reads results/{run_id}/*.csv
-    A->>A: Compute PnL, Sharpe, drawdown, win rate
-    A->>FS: Write results/{run_id}/performance.json
+    Note over A: Reads results/{run_id}/tearsheet.json + CSVs
+    A->>A: Interpret results (why did this work/fail?)
+    A->>A: Compare against previous runs (via MLflow or local files)
     A->>FS: Write results/{run_id}/analysis.md
     A->>FS: Update MEMORY.md (findings, critique)
     A->>FS: Suggest next direction in PROGRESS.md
@@ -1876,12 +1875,12 @@ Source: Verified via `polymarket clob fee-rate` and `polymarket clob market` acr
 
 ## 7. Implementation Blocks
 
-Blocks are ordered by dependency. Each block is a behavioral grouping.
+All blocks are v1 — Python-side extensions, no Rust changes. Ordered by dependency.
 
-### Tier v1: Python-Side Extensions (No Rust Changes)
+> **Infrastructure prerequisite:** The infra repo (separate from this codebase) must host an MLflow tracking server. This must be running and accessible before the agentic loop can log experiments. Add `MLFLOW_TRACKING_URI` to the environment.
 
 #### Block 1: PolymarketStrategy Base Class
-**What:** Abstract strategy base class with limit-order exit, resolution timer, price convergence detection.
+**What:** Abstract strategy base class with limit-order exit, resolution timer, price convergence detection, no-quotes detection, and time-based exit.
 **Files:** `strategies/polymarket_base.py`
 **Depends on:** Nothing (pure Python, extends NautilusTrader's Strategy)
 **Effort:** Medium
@@ -1893,30 +1892,25 @@ Blocks are ordered by dependency. Each block is a behavioral grouping.
 **Effort:** Medium
 
 #### Block 3: Universe Config & Slug Builders
-**What:** YAML universe definitions + slug builder functions for common market types.
+**What:** YAML universe definitions + slug builder functions for common market types. Includes backtest instrument builder for constructing `BinaryOption` from PMXT metadata.
 **Files:** `strategies/slug_builders.py`, `universe/config.py`, `universe/resolver.py`
 **Depends on:** Nothing
 **Effort:** Small
 
-#### Block 4: Feather-to-Parquet Conversion Script
-**What:** Wrapper around `catalog.convert_stream_to_data()` for the record-and-replay pipeline.
-**Files:** `scripts/convert_recordings.py`
-**Depends on:** Nothing (uses existing NautilusTrader API)
-**Effort:** Small
+#### Block 4: PMXT Data Pipeline
+**What:** Download PMXT parquet → filter by condition_id → transform to NT types (`OrderBookDelta`, `TradeTick`) → feed to `BacktestEngine` via `add_data_iterator()`. Includes instrument construction from PMXT metadata.
+**Files:** `pmxt/transformer.py`, `pmxt/instruments.py`, `pmxt/download.py`
+**Depends on:** PMXT schema investigation (first task: download one file, inspect with `pq.read_schema()`)
+**Effort:** Large
 
-#### Block 5: Runner Script
-**What:** Reads `config.yml`, dynamically imports strategy, builds engine/node, runs, exports reports.
+#### Block 5: Runner Script + Automated Tearsheet
+**What:** Reads `config.yml`, dynamically imports strategy, builds engine/node, runs, extracts results via `ReportProvider`, computes metrics (PnL, Sharpe, drawdown, win rate), generates tearsheet, logs to MLflow.
 **Files:** `runner.py`
-**Depends on:** Blocks 1-2 (strategies to run), Block 4 (data to backtest against)
+**Depends on:** Blocks 1-2 (strategies), Block 4 (PMXT data for backtest mode)
 **Effort:** Medium
+**Prerequisite:** MLflow tracking server must be running (infra repo).
 
-#### Block 6: Experiment Schema & Analyst Script
-**What:** YAML experiment identity schema. Script to compute metrics from NautilusTrader report CSVs.
-**Files:** `analyzer/metrics.py`, `analyzer/report.py`
-**Depends on:** Block 5 (produces CSVs to analyze)
-**Effort:** Medium
-
-#### Block 7: Polymarket Fee Model
+#### Block 6: Polymarket Fee Model
 **What:** Custom FeeModel for BacktestEngine/Sandbox that applies correct per-market fees.
 **Files:** `models/polymarket_fees.py`
 **Depends on:** Nothing
@@ -1974,33 +1968,12 @@ engine.add_venue(
 
 **Limitation for paper trading:** `SandboxExecutionClientConfig` hardcodes `MakerTakerFeeModel()` internally (`sandbox/execution.py:119`). There is no config parameter to override it. To get accurate fees in paper trading, you would need to either (a) modify the sandbox execution client, or (b) accept that paper trading fees are inaccurate and validate fee impact in backtest only.
 
-### Tier v2: Full Agentic Loop
-
-#### Block 8: Agentic Loop Orchestration
-**What:** Orchestrator script + agent session prompts for Strategist and Analyst.
-**Depends on:** All v1 blocks
+#### Block 7: Agentic Loop Orchestration
+**What:** Orchestrator script + agent session prompts for Strategist and Analyst. Includes convergence detection.
+**Files:** `orchestrator.sh`, `agents/strategist_prompt.md`, `agents/analyst_prompt.md`
+**Depends on:** All previous blocks
 **Effort:** Large
-
-#### Block 9: PMXT Data Pipeline
-**What:** Download PMXT parquet → filter by condition_id → transform to NT types → write to catalog.
-**Depends on:** PMXT schema investigation
-**Effort:** Large
-
-#### Block 10: MLflow Integration
-**What:** Log experiment params/metrics/artifacts to MLflow for comparison.
-**Depends on:** Block 6
-**Effort:** Medium
-
-### Tier v3: Advanced (Design Only)
-
-#### Block 11: ML Signal Strategies
-Strategy that loads trained model, runs inference in `generate_signal()`.
-
-#### Block 12: Automatic Universe Rotation
-Detect market resolution, discover replacements, update subscriptions automatically.
-
-#### Block 13: Multi-Strategy Portfolio
-Run multiple strategies simultaneously with portfolio-level risk management.
+**Prerequisite:** MLflow tracking server must be running (infra repo).
 
 ---
 
@@ -2008,13 +1981,13 @@ Run multiple strategies simultaneously with portfolio-level risk management.
 
 | Risk | Severity | Mitigation |
 |------|----------|-----------|
-| **Fee-less backtests** | **High** | Adapter hardcodes fees as None. Hourly crypto has 20% round-trip fees. Start on zero-fee markets. Build FeeModel override (Block 7). |
+| **Fee-less backtests** | **High** | Adapter hardcodes fees as None. Hourly crypto has 20% round-trip fees. Start on zero-fee markets. Build FeeModel override (Block 6). |
 | **Position exit on Polymarket** | **High** | `close_position()` sends MarketOrder (rejected). PolymarketStrategy must implement limit FOK exit with retries. |
 | **PMXT schema unknown** | Medium | Haven't inspected PMXT files. First task: download one file, run `pq.read_schema()`, document mapping. |
 | **Paper trading fill realism** | Medium | SimulatedExchange is generic. Polymarket-specific dynamics (rewards, resolution) not modeled. Fine for framework validation, needs calibration for production. |
 | **WS subscription limit (200)** | Medium | Universe must not exceed 200 instruments. Priority-based subscription if needed. |
-| **Recording data quality** | Medium | StreamingConfig records reliably, but coverage = only what you subscribe to. Need deliberate recording sessions across market types. |
 | **Agent loop divergence** | Medium | Convergence criteria: max 20 iterations, 4-hour limit, Sharpe plateau detection over 5 runs. |
+| **MLflow server availability** | Medium | Runner logs to MLflow but continues if logging fails. Infra repo must provision the server before agentic loop runs. |
 | **Market with expiration_ns == 0** | Low | Markets without `end_date` get `expiration_ns = 0`. Strategy must detect this and skip timer-based exit, relying on price convergence instead. |
 
 ---
@@ -2024,10 +1997,9 @@ Run multiple strategies simultaneously with portfolio-level risk management.
 | Question | Answer |
 |----------|--------|
 | **Can I paper trade on live Polymarket data today?** | **Yes.** Use TradingNode with SandboxExecutionClientConfig + PolymarketDataClientConfig. Zero code changes needed. |
-| **Can I record live data for later backtesting?** | **Yes.** Add `StreamingConfig(catalog_path="...")` to your TradingNodeConfig. One config flag. |
-| **Can I backtest with recorded data?** | **Almost.** Recording works today. You need to run `convert_stream_to_data()` to convert feather→parquet before loading into BacktestEngine. ~20 lines of Python. |
-| **Can I backtest with PMXT historical data?** | **Not yet.** Need to investigate PMXT schema, build a transformer. Medium effort. |
+| **Can I backtest with PMXT historical data?** | **Not yet (v1).** Need to investigate PMXT schema, build the transformer (Block 4), and feed data via `add_data_iterator()`. Medium effort. |
 | **Can I live trade on Polymarket?** | **Yes.** Swap SandboxExecClient for PolymarketExecClient. Requires API keys and funded wallet. |
-| **Can I define a dynamic universe of markets?** | **Partially.** Slug builders work today for known market patterns (hourly crypto). Tag/volume filtering needs to be built. |
-| **Can I handle market resolution safely?** | **Not yet.** Need PolymarketStrategy base class with limit-order exit. ~200 lines of Python. |
-| **Can I run the full agentic loop?** | **Not yet.** Need runner script (Block 5), experiment schema (Block 6), and orchestrator (Block 8). |
+| **Can I define a dynamic universe of markets?** | **Partially.** Slug builders work today for known market patterns (hourly crypto) in live/paper mode. For backtesting, instruments must be constructed manually from PMXT data. Tag/volume filtering needs to be built (v1). |
+| **Can I handle market resolution safely?** | **Not yet (v1).** Need PolymarketStrategy base class with limit-order exit (Block 1). But v0 mechanisms exist: price-threshold, time-based, and no-quotes detection work today in strategy code. |
+| **Can I run the full agentic loop?** | **Not yet (v1).** Need runner script with automated tearsheet (Block 5), MLflow integration, PMXT pipeline (Block 4), and orchestrator (Block 7). |
+| **Do strategies have library restrictions?** | **No.** Strategies are plain Python — import any library (numpy, pandas, sklearn, torch, etc). No sandboxing. |

@@ -1,41 +1,53 @@
-# Progress — Plan v2
+# PROGRESS — Polymarket Agentic Trading Framework Plan
 
 ## Current State
 
-**PLAN.md v2.4 (final).** All issues resolved. Plan is complete.
+**Plan version:** v3.2
+**Status:** All 10 corrections applied. All reviewer fixes applied. Final cosmetic polish complete. **Ready for human review.**
 
-## What's Done
+## What Changed (v3.1 → v3.2) — Final Polish
 
-1. **Plan v2.0 written** (iteration 1) — ~750 lines covering all required sections
-2. **Plan v2.1 fix pass** (iteration 2) — 7 fixes applied from first review
-3. **Plan v2.1 review** (iteration 2) — 15 code claims verified, 4 CLI claims verified, found 2 MF + 2 SF issues
-4. **Plan v2.2 fix pass** (iteration 3) — 4 fixes applied from second review
-5. **Plan v2.2 review** (iteration 3) — 11 code claims verified, 4 CLI claims verified, found 1 MF + 3 SF issues
-6. **Plan v2.3 fix pass** (iteration 4) — 5 fixes applied from third review
-7. **Plan v2.3 review** (iteration 4) — 17 code claims verified, 1 CLI claim verified, found 0 MF + 2 SF issues
-8. **Plan v2.4 final fix pass** (iteration 5) — 3 fixes applied, 1 nitpick skipped (correct as-is)
+Two cosmetic fixes from reviewer's optional observations:
 
-## Cumulative Issue Tracker
+1. **Added missing `InstrumentId` import** in Section 4.2 paper trading example (line 603). The code example used `InstrumentId.from_str(...)` at line 640 but the import block didn't include it. Now imports `TraderId, InstrumentId` together.
 
-| Iteration | Issues Found | Issues Fixed | Remaining |
-|-----------|-------------|-------------|-----------|
-| 1 (review) | 4 MF + 3 SF | — | 4 MF + 3 SF |
-| 2 (fix)    | — | 4 MF + 3 SF | 0 |
-| 2 (review) | 2 MF + 2 SF | — | 2 MF + 2 SF |
-| 3 (fix)    | — | 2 MF + 2 SF | 0 |
-| 3 (review) | 1 MF + 3 SF | — | 1 MF + 3 SF |
-| 4 (fix)    | — | 1 MF + 3 SF | 0 |
-| 4 (review) | 0 MF + 2 SF | — | 0 MF + 2 SF |
-| 5 (fix)    | — | 0 MF + 2 SF + 1 N | **0** |
+2. **Renamed strategy filenames** in state contract directory listing (lines 1540-1541): `imbalance_v1.py` → `imbalance_iter1.py`, `spread_v1.py` → `spread_iter1.py`. Now consistent with the `_iter2` convention used in the sequence diagram at line 1809. Added clarifying comment: "Iteration suffix (_iter1, _iter2) — NOT scope tiers".
 
-## All 5 Primary Review Tests: PASS
+## Full Change Summary (v2.4 → v3.2)
 
-1. Feature Explanation: PASS — no name-drops without explanation
-2. Exists/Build Separation: PASS — all 6 sections use EXISTS/BUILD/BLOCKED
-3. Actionability: PASS — all 5 key questions answerable
-4. PMXT Pipeline Depth: PASS — honest about unknowns, both paths described
-5. Code Examples: PASS — real Python throughout
+### Structural
+- Flattened from v0/v1/v2/v3 to **v0/v1 only** — two tiers, clean boundary
+- Removed all "BLOCKED UNTIL (v2+)" sections
+- Moved PMXT data pipeline from v2 to v1 (critical unblock)
+- Moved MLflow integration from v2 to v1
+- Moved Agentic Loop orchestration from v2 to v1
+- Removed dedicated Record-and-Replay section (brief mention only)
+- Removed Section 5.4 (StreamingConfig deep-dive)
 
-## Verdict
+### Agent Model
+- Unified to **Strategist + Analyst** (2 agents) everywhere
+- Removed Researcher/Writer/Analyzer (3 agents) model
 
-Plan is final. Zero issues remaining. 44+ code/CLI claims verified across 4 review cycles. Issue severity declined monotonically (4 MF → 2 MF → 1 MF → 0 MF → 0). Ready for execution planning.
+### Runner Automation
+- Runner script handles: backtest -> ReportProvider -> metrics -> tearsheet -> MLflow -> disk
+- Analyst agent ONLY reads finished reports and interprets
+- Added `compute_tearsheet()` and `log_to_mlflow()` functions
+- Added MLflow infra prerequisite
+
+### Technical Additions
+- C1: Instrument-data connection via instrument_id
+- C2: `add_data_iterator()` for streaming large datasets
+- C5: event_slug_builder asymmetry (live/paper only)
+- C6: Python library freedom
+- C7: All v0 position handling mechanisms (with corrected code example)
+- C8: Inert instruments in backtest
+
+### Implementation Blocks (Section 7)
+7 blocks, all v1:
+1. PolymarketStrategy Base Class
+2. Concrete Strategies
+3. Universe Config & Slug Builders
+4. PMXT Data Pipeline
+5. Runner Script + Automated Tearsheet
+6. Polymarket Fee Model
+7. Agentic Loop Orchestration
