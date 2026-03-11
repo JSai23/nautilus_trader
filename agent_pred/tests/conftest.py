@@ -53,6 +53,10 @@ def discover_market_with_tokens(hour: str) -> dict:
         len(market_rows[best_market]),
     )
 
+    # KNOWN LIMITATION: Yes/No assignment is by lexicographic sort of token_id,
+    # not from the Gamma API. The actual outcome label may be inverted. This
+    # doesn't affect imbalance strategy correctness (trades on volume, not
+    # direction) but makes analyst reasoning about market direction unreliable.
     token_list = []
     for i, tid in enumerate(sorted(tokens)):
         outcome = "Yes" if i == 0 else "No"

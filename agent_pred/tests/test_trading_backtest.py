@@ -19,6 +19,7 @@ from nautilus_trader.model.objects import Money
 from conftest import discover_market_with_tokens
 from pmxt.generator import pmxt_data_generator
 from runner.tearsheet import compute_tearsheet
+from strategy.imbalance import ImbalanceStrategy, ImbalanceStrategyConfig
 from strategy.simple_test import SimpleTestStrategy, SimpleTestStrategyConfig
 from universe.instruments import build_instrument_maps
 
@@ -129,5 +130,78 @@ class TestTradingBacktest:
                 strategy.order_count,
             )
             assert len(orders) > 0, "No orders in engine despite strategy submitting"
+
+        engine.dispose()
+
+    @pytest.mark.timeout(300)
+    def test_imbalance_strategy_produces_positions(self):
+        """ImbalanceStrategy with null stop_loss/take_profit enters positions.
+
+        Verifies the strategy:
+        - Enters BUY positions based on bid-volume imbalance
+        - Does not crash with take_profit=null, stop_loss=null
+        - Produces positions (win rate may be 0% — strategy needs tuning
+          for thin binary option books, but the pipeline is correct)
+        """
+        market_info = discover_market_with_tokens(TEST_HOUR)
+        instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
+
+        engine = BacktestEngine(config=BacktestEngineConfig(logging=False))
+        engine.add_venue(
+            venue=POLYMARKET_VENUE,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.CASH,
+            starting_balances=[Money(10_000, USDC_POS)],
+            book_type=BookType.L2_MBP,
+        )
+        for inst in instruments.values():
+            engine.add_instrument(inst)
+
+        gen = pmxt_data_generator(
+            market_ids=market_ids,
+            hours=[TEST_HOUR],
+            instruments=instruments,
+            instrument_ids=instrument_ids,
+        )
+        engine.add_data_iterator("pmxt", gen)
+
+        instrument_id_strs = [str(iid) for iid in instrument_ids.values()]
+        config = ImbalanceStrategyConfig(
+            instrument_ids=instrument_id_strs,
+            imbalance_threshold=0.3,
+            trade_size=5.0,
+            take_profit=None,
+            stop_loss=None,
+        )
+        strategy = ImbalanceStrategy(config=config)
+        engine.add_strategy(strategy)
+
+        engine.run()
+
+        orders = engine.cache.orders()
+        positions = engine.cache.positions()
+
+        log.info(
+            "ImbalanceStrategy: %d orders, %d positions",
+            len(orders), len(positions),
+        )
+
+        # The strategy should submit orders on books with sufficient imbalance
+        assert len(orders) > 0, (
+            "ImbalanceStrategy submitted 0 orders — no book had imbalance > 0.3"
+        )
+
+        # Verify at least one position was opened
+        assert len(positions) > 0, "No positions created despite orders"
+
+        # Verify tearsheet computes without error
+        orders_df = ReportProvider.generate_order_fills_report(orders)
+        fills_df = ReportProvider.generate_fills_report(orders)
+        positions_df = ReportProvider.generate_positions_report(positions)
+
+        if not fills_df.empty:
+            tearsheet = compute_tearsheet(positions_df, fills_df)
+            log.info("ImbalanceStrategy tearsheet: %s", tearsheet.to_dict())
+            assert tearsheet.num_positions > 0
 
         engine.dispose()

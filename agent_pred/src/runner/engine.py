@@ -12,6 +12,7 @@ import logging
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -132,6 +133,14 @@ def run_backtest(
     results_dir.mkdir(parents=True, exist_ok=True)
 
     try:
+        # Filter markets by condition_ids when specified
+        if config.condition_ids:
+            market_infos = [m for m in market_infos if m.get("condition_id") in config.condition_ids]
+            if not market_infos:
+                raise ValueError(
+                    f"No markets match condition_ids: {config.condition_ids[:3]}..."
+                )
+
         # Build instruments
         instruments, instrument_ids, market_ids = build_instrument_maps(market_infos)
         log.info("Built %d instruments for %d markets", len(instruments), len(market_ids))
@@ -170,6 +179,13 @@ def run_backtest(
         instrument_id_strs = [str(iid) for iid in instrument_ids.values()]
         config.strategy_params["instrument_ids"] = instrument_id_strs
 
+        # Compute end-of-data time so strategy exits before book goes stale
+        if config.data_hours:
+            last_hour = sorted(config.data_hours)[-1]
+            dt = datetime.strptime(last_hour, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
+            end_dt = dt + timedelta(hours=1)
+            config.strategy_params["end_time_ns"] = int(end_dt.timestamp() * 1_000_000_000)
+
         # Import strategy and its config class (convention: StrategyConfig in same module)
         strategy_cls = _import_strategy_class(config.strategy_path)
         config_module_path = config.strategy_path.rsplit(":", 1)[0]
@@ -189,14 +205,21 @@ def run_backtest(
         # Generate reports
         orders = engine.cache.orders()
         positions = engine.cache.positions()
+        closed_positions = [p for p in positions if p.is_closed]
 
         orders_df = ReportProvider.generate_order_fills_report(orders)
         fills_df = ReportProvider.generate_fills_report(orders)
         positions_df = ReportProvider.generate_positions_report(positions)
         account_df = pd.DataFrame()  # Account report needs Account object
 
-        # Compute tearsheet
-        tearsheet = compute_tearsheet(positions_df, fills_df, account_df)
+        # Compute tearsheet from closed positions only — open positions
+        # have no realized PnL and dilute win_rate/avg_trade_pnl.
+        closed_df = (
+            ReportProvider.generate_positions_report(closed_positions)
+            if closed_positions
+            else pd.DataFrame()
+        )
+        tearsheet = compute_tearsheet(closed_df, fills_df, account_df)
 
         result = RunResult(
             run_id=run_id,

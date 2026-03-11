@@ -75,6 +75,8 @@ def discover_markets(hours: list[str], metadata_dir: Path) -> list[dict]:
         if len(tokens) < 2:
             continue  # Need at least Yes/No tokens
 
+        # KNOWN LIMITATION: Yes/No assignment is by lexicographic sort of
+        # token_id, not from the Gamma API. See conftest.py for details.
         token_list = []
         for i, tid in enumerate(sorted(tokens)):
             outcome = "Yes" if i == 0 else "No"

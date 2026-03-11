@@ -1,11 +1,15 @@
 """Order book imbalance strategy — example strategy extending PolymarketStrategy.
 
 Trades based on the ratio of bid volume to ask volume in the order book.
-When imbalance exceeds threshold, enters a position in the dominant direction.
+When imbalance exceeds threshold, BUYs the token (bullish signal).
+
+Market-aware: only enters one side per market. Never sells/shorts tokens —
+on Polymarket, a bearish view on YES means BUY NO, not SELL YES.
 """
 
 from __future__ import annotations
 
+from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_condition_id
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_trader.model.identifiers import InstrumentId
@@ -19,28 +23,51 @@ class ImbalanceStrategyConfig(PolymarketStrategyConfig, frozen=True):
 
 
 class ImbalanceStrategy(PolymarketStrategy):
-    """Trades order book imbalance on Polymarket binary options."""
+    """Trades order book imbalance on Polymarket binary options.
+
+    Only BUYs tokens when bid volume dominates (positive imbalance).
+    Tracks positions per market (condition_id) to avoid entering both
+    YES and NO tokens of the same market simultaneously.
+    """
 
     def __init__(self, config: ImbalanceStrategyConfig) -> None:
         super().__init__(config)
         self._imbalance_threshold = config.imbalance_threshold
         self._trade_size = config.trade_size
+        self._market_instruments: dict[str, list[InstrumentId]] = {}
+
+    def on_start(self) -> None:
+        super().on_start()
+        # Group instruments by market (condition_id)
+        for iid in self._instrument_ids:
+            condition_id = get_polymarket_condition_id(iid)
+            self._market_instruments.setdefault(condition_id, []).append(iid)
+
+    def _market_has_position(self, instrument_id: InstrumentId) -> bool:
+        """Check if any sibling token in the same market has an open position."""
+        condition_id = get_polymarket_condition_id(instrument_id)
+        for sibling_id in self._market_instruments.get(condition_id, []):
+            if self.cache.positions_open(instrument_id=sibling_id):
+                return True
+        return False
 
     def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
         super().on_order_book_deltas(deltas)
 
         instrument_id = deltas.instrument_id
-        if instrument_id in self._closed or instrument_id in self._exiting:
+        if self._data_ended or instrument_id in self._closed or instrument_id in self._exiting:
             return
 
-        # Skip if we already have a position
-        open_positions = self.cache.positions_open(instrument_id=instrument_id)
-        if open_positions:
+        # Skip if this instrument already has a position
+        if self.cache.positions_open(instrument_id=instrument_id):
+            return
+
+        # Skip if another token from the same market has a position
+        if self._market_has_position(instrument_id):
             return
 
         # Skip if we have open orders
-        orders = self.cache.orders_open(instrument_id=instrument_id)
-        if orders:
+        if self.cache.orders_open(instrument_id=instrument_id):
             return
 
         book = self.cache.order_book(instrument_id)
@@ -67,26 +94,16 @@ class ImbalanceStrategy(PolymarketStrategy):
             return
 
         best_ask = book.best_ask_price()
-        best_bid = book.best_bid_price()
 
+        # Only BUY on positive imbalance (bid-heavy -> price likely to rise).
+        # Never SELL/short — expressing a bearish view means buying the
+        # opposite token, which will trigger via its own imbalance signal.
         if imbalance > self._imbalance_threshold and best_ask is not None:
-            # More bids than asks -> price likely to rise -> buy
             order = self.order_factory.limit(
                 instrument_id=instrument_id,
                 order_side=OrderSide.BUY,
                 quantity=instrument.make_qty(self._trade_size),
                 price=best_ask,
-                time_in_force=TimeInForce.FOK,
-            )
-            self.submit_order(order)
-
-        elif imbalance < -self._imbalance_threshold and best_bid is not None:
-            # More asks than bids -> price likely to fall -> sell
-            order = self.order_factory.limit(
-                instrument_id=instrument_id,
-                order_side=OrderSide.SELL,
-                quantity=instrument.make_qty(self._trade_size),
-                price=best_bid,
                 time_in_force=TimeInForce.FOK,
             )
             self.submit_order(order)

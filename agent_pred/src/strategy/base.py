@@ -28,6 +28,7 @@ class PolymarketStrategyConfig(StrategyConfig, frozen=True):
     max_exit_retries: int = 3
     take_profit: float | None = None
     stop_loss: float | None = None
+    end_time_ns: int = 0  # End of data window (ns epoch). Triggers exit 60s before.
 
 
 class PolymarketStrategy(Strategy):
@@ -50,6 +51,9 @@ class PolymarketStrategy(Strategy):
         self._take_profit = config.take_profit
         self._stop_loss = config.stop_loss
 
+        self._end_time_ns = config.end_time_ns
+
+        self._data_ended = False  # Set when end-of-data exit fires; blocks new entries
         self._exiting: set[InstrumentId] = set()
         self._closed: set[InstrumentId] = set()
         self._held_through: dict[InstrumentId, bool] = {}
@@ -67,6 +71,16 @@ class PolymarketStrategy(Strategy):
                         alert_time_ns=alert_ns,
                     )
 
+        # End-of-data exit: close all positions 60s before data window ends.
+        # Prevents positions from reaching resolution timer with stale book prices.
+        if self._end_time_ns > 0:
+            exit_ns = self._end_time_ns - 60_000_000_000  # 60s before
+            if exit_ns > 0:
+                self.clock.set_time_alert_ns(
+                    name="end_of_data_exit",
+                    alert_time_ns=exit_ns,
+                )
+
     def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
         instrument_id = deltas.instrument_id
         if instrument_id in self._closed:
@@ -80,11 +94,15 @@ class PolymarketStrategy(Strategy):
         self._check_exit_conditions(instrument_id)
 
     def on_event(self, event: Any) -> None:
-        # Handle resolution timer alerts
-        if hasattr(event, "name") and isinstance(event.name, str) and event.name.startswith("resolution_"):
+        if not (hasattr(event, "name") and isinstance(event.name, str)):
+            return
+
+        if event.name.startswith("resolution_"):
             iid_str = event.name[len("resolution_"):]
             instrument_id = InstrumentId.from_str(iid_str)
             self._trigger_exit(instrument_id, reason="resolution_timer")
+        elif event.name == "end_of_data_exit":
+            self._exit_all_open(reason="end_of_data")
 
     def _check_exit_conditions(self, instrument_id: InstrumentId) -> None:
         if instrument_id in self._exiting or instrument_id in self._closed:
@@ -103,15 +121,28 @@ class PolymarketStrategy(Strategy):
                 self._trigger_exit(instrument_id, reason="convergence")
                 return
 
-        # Take-profit / stop-loss
-        open_positions = self.cache.positions_open(instrument_id=instrument_id)
-        position = open_positions[0] if open_positions else None
-        if position:
-            unrealized = float(position.unrealized_pnl(best_bid if position.is_long else best_ask))
-            if self._take_profit and unrealized > self._take_profit:
-                self._trigger_exit(instrument_id, reason="take_profit")
-            elif self._stop_loss and unrealized < self._stop_loss:
-                self._trigger_exit(instrument_id, reason="stop_loss")
+        # Take-profit / stop-loss (skip entirely when both are disabled)
+        if self._take_profit is not None or self._stop_loss is not None:
+            open_positions = self.cache.positions_open(instrument_id=instrument_id)
+            position = open_positions[0] if open_positions else None
+            if position:
+                price = best_bid if position.is_long else best_ask
+                if price is None:
+                    return
+                unrealized = float(position.unrealized_pnl(price))
+                if self._take_profit is not None and unrealized > self._take_profit:
+                    self._trigger_exit(instrument_id, reason="take_profit")
+                elif self._stop_loss is not None and unrealized < self._stop_loss:
+                    self._trigger_exit(instrument_id, reason="stop_loss")
+
+    def _exit_all_open(self, reason: str) -> None:
+        """Exit all open positions across all instruments."""
+        self._data_ended = True
+        for instrument_id in self._instrument_ids:
+            if instrument_id in self._closed or instrument_id in self._exiting:
+                continue
+            if self.cache.positions_open(instrument_id=instrument_id):
+                self._trigger_exit(instrument_id, reason=reason)
 
     def _trigger_exit(self, instrument_id: InstrumentId, reason: str) -> None:
         if instrument_id in self._exiting or instrument_id in self._closed:
