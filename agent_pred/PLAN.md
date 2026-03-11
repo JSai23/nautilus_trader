@@ -1,8 +1,8 @@
-# System Plan: Polymarket Agentic Trading Framework
+# Nautilus Decomposition for Agent Pred
 
-> **Plan type:** System plan (architecture and behavior)
-> **Status:** Draft v3.2
-> **Date:** 2026-03-10
+> **Plan type:** System plan (architecture and behavior) + Implementation blocks
+> **Status:** Draft v3.2 + implementation appendix
+> **Date:** 2026-03-11
 > **Base:** Built on PLAN v2.4 (27 code-verified claims, 10 human-reviewed corrections applied, reviewer feedback addressed)
 
 ---
@@ -2003,3 +2003,255 @@ engine.add_venue(
 | **Can I handle market resolution safely?** | **Not yet (v1).** Need PolymarketStrategy base class with limit-order exit (Block 1). But v0 mechanisms exist: price-threshold, time-based, and no-quotes detection work today in strategy code. |
 | **Can I run the full agentic loop?** | **Not yet (v1).** Need runner script with automated tearsheet (Block 5), MLflow integration, PMXT pipeline (Block 4), and orchestrator (Block 7). |
 | **Do strategies have library restrictions?** | **No.** Strategies are plain Python — import any library (numpy, pandas, sklearn, torch, etc). No sandboxing. |
+
+---
+
+# Part II: Implementation Blocks
+
+> Everything above is context — what exists, how it works, what the constraints are.
+> Everything below is **what we need to build**. The agent loop will refine these blocks into a concrete implementation plan.
+
+---
+
+## Block 1: PMXT Data Loading System (Highest Priority)
+
+The most complex and opinionated component. Scaffolding for how PMXT data loads into NautilusTrader.
+
+### Constraints
+
+- Server has ~40GB available storage
+- PMXT dataset is larger than 40GB — we cannot download everything
+- We only need a representative sample; more can be requested later
+
+### Required Capabilities
+
+1. **Download**: Pull PMXT Parquet files for specific markets/time ranges
+2. **Store**: Local storage with deduplication (avoid re-downloading)
+3. **Index**: Track what data exists locally — markets, time ranges, coverage
+4. **Discover**: Agents can query the index ("for these tags, we have data covering this period")
+
+### Data Universe Concept
+
+A universe represents a set of markets over a time window:
+
+```
+Universe:
+    markets: election*
+    start: 2023-01
+    end: 2023-06
+```
+
+The system downloads only what that universe requires.
+
+### Market Identification
+
+Markets can be identified by:
+- Slug patterns (first-class identifiers)
+- Condition IDs
+- Mapping between condition IDs and slugs
+
+### Developer Experience Target
+
+```python
+universe = load_universe("election_markets_2024")
+markets = markets_from_slug("election-*")
+```
+
+Agents should only need to: define slug pattern → validate → run experiment. The data layer is invisible.
+
+### PMXT Data Decomposition (Key Unknown)
+
+The loop must attempt to:
+1. Pull a PMXT dataset
+2. Open the Parquet files
+3. Inspect schema
+4. Understand how it maps to order book data
+5. Compare with the Polymarket WebSocket format
+
+If data access fails, write `HUMAN.md` explaining what was attempted, where it failed, and what access is missing. Then stop.
+
+---
+
+## Block 2: Universe Definition System
+
+Connects the chain:
+
+```
+slug patterns → market universe → PMXT data → NautilusTrader instruments
+```
+
+Slug patterns are first-class identifiers. This block defines:
+- How universes are specified (config format)
+- How universes resolve into instruments
+- How the data index connects to universe definitions
+
+---
+
+## Block 3: Real-Time Data Source (Order Book WebSocket)
+
+Currently the Polymarket adapter uses the **trades endpoint** for real-time data. We want the **order book WebSocket** instead.
+
+Goals:
+1. Connect to Polymarket order book WebSocket
+2. Parse the order book format
+3. Align format with PMXT historical data (same data shape for backtest and live)
+
+This WebSocket becomes the source for both live and paper trading. The alignment with PMXT is critical — strategies should see identical data structures in backtest and live modes.
+
+---
+
+## Block 4: Strategy Resolution Defaults
+
+Provide a default exit strategy utility for quick experiment setup:
+
+```
+take profit: 0.97
+stop loss: 0.03
+```
+
+Not for extreme-edge strategies, but useful so agents can run experiments quickly without manually implementing exits every time.
+
+---
+
+## Block 5: External Historical Data Support
+
+Strategies need access to historical datasets beyond price data: signals, external metrics, derived features.
+
+Simple approach:
+- Store as Parquet files
+- Load in Python
+- Query by timestamp
+
+```python
+data.query(timestamp)
+```
+
+Strategy logic handles the rest. The goal is a clean path for auxiliary historical data, not a complex framework.
+
+---
+
+## Block 6: MLflow Infrastructure
+
+Install and host MLflow on the server. There is already an infra project at the root level.
+
+Tasks:
+1. Install MLflow
+2. Configure with database backend (not file backend)
+3. Expose through Caddy
+
+---
+
+## Block 7: MLflow Metrics + Experiment Structure
+
+Define how results map to MLflow's hierarchy:
+
+```
+Experiment (3 levels)
+  └── Run
+       └── Child Run
+```
+
+Decide the mapping. Example:
+- Experiment = strategy family
+- Run = parameter configuration
+- Child run = specific execution
+
+Backtests log automatically. Artifacts, metrics, and metadata all stored.
+
+---
+
+## Block 8: MLflow for Live / Paper Trading
+
+MLflow logging for paper trading runs:
+- Update metrics in real time
+- Log artifacts
+- Maintain run state
+- Runs identifiable as live/paper (not backtest)
+
+---
+
+## Block 9: Time-Based Agent Waiting
+
+Agent loops need time-based waits. A strategy trading 15-minute markets might run for 6 hours. The loop should support:
+
+```
+wait 6 hours → then analyze results
+```
+
+Rather than polling for completion.
+
+---
+
+## Block 10: Worker / Analyst Agent System
+
+### Worker Agent
+- Writes experiments, launches runs, saves experiment context
+- Can launch many experiments simultaneously (e.g., 20 at once)
+- Experiments vary: 1 run, 5 runs, live runs, backtests
+- Records **why** experiments were launched (markdown context files)
+
+### Analyst Agent
+- Reads finished results
+- Writes analysis
+- Saves findings
+
+### Loop Behavior
+
+```
+Worker launches experiments
+  ↓
+Experiments run
+  ↓
+Analyst analyzes results
+  ↓
+Worker relaunches with analysis context
+```
+
+Workers operate in cycles, not strict chains. This enables highly parameterized exploration.
+
+---
+
+## Block 11: Agent Textbook (Critical)
+
+A technical textbook for agents describing the entire system:
+
+```
+Chapter 1 — Data Loading
+Chapter 2 — Universe Definitions
+Chapter 3 — Strategy Construction
+Chapter 4 — Running Experiments
+Chapter 5 — Logging with MLflow
+```
+
+Each chapter includes explanations, code examples, and **working scripts that actually run**. Agent prompts stay simple and reference the textbook: "Follow Chapter 3 to implement strategy logic."
+
+---
+
+## Block 12: Testing Strategy
+
+Simple testing for each component. Not production-level — just verify expected behaviors work:
+
+- PMXT data downloads successfully
+- Universes resolve correctly
+- WebSocket order book parsing works
+- MLflow logging works
+- Strategies run end-to-end
+
+---
+
+## Block Priority
+
+| Priority | Block | Reason |
+|----------|-------|--------|
+| 1 | Block 1 (PMXT Data) | Everything depends on data; biggest unknown |
+| 2 | Block 2 (Universe) | Defines how experiments target markets |
+| 3 | Block 3 (WS Order Book) | Aligns live and historical data formats |
+| 4 | Block 6 (MLflow Infra) | Infrastructure dependency for logging |
+| 5 | Block 7 (MLflow Structure) | How results are organized |
+| 6 | Block 4 (Exit Defaults) | Unblocks quick experiments |
+| 7 | Block 11 (Textbook) | Agents need this to operate |
+| 8 | Block 10 (Agent System) | The agentic loop itself |
+| 9 | Block 5 (External Data) | Nice to have early |
+| 10 | Block 8 (Live MLflow) | After backtest MLflow works |
+| 11 | Block 9 (Time Waits) | After agent system works |
+| 12 | Block 12 (Testing) | Continuous, not a phase |
