@@ -36,6 +36,31 @@ The system must:
 | Limited RAM | Cannot load 300-700MB parquet files into memory | Stream via HTTP range requests, column pruning, row filtering |
 | Single server | All components colocated | SQLite for MLflow backend, local file storage |
 
+### Python Tooling
+
+All Python dependency and environment management uses **`uv`**. No pip, no conda, no manual venvs.
+
+`agent_pred/` is a **uv project** with its own `pyproject.toml`:
+
+```bash
+cd agent_pred
+uv init                          # creates pyproject.toml
+uv add pyarrow fsspec aiohttp    # data deps
+uv add mlflow                    # experiment tracking
+uv add nautilus_trader            # if installable, else path dep
+uv add --dev pytest              # test runner
+```
+
+All commands run via `uv run`:
+
+```bash
+uv run python scripts/run_backtest.py
+uv run pytest tests/
+uv run python -m agent_pred.src.pmxt.downloader
+```
+
+Never activate a venv manually. Never use `pip install`. `uv run` handles everything.
+
 ---
 
 ## 2. System Architecture
