@@ -1,0 +1,39 @@
+# Example backtest configuration
+#
+# With auto-discovery (no pre-cached metadata needed):
+#   uv run python scripts/run_backtest.py configs/example_backtest.yml --discover
+#
+# With pre-cached metadata:
+#   uv run python scripts/run_backtest.py configs/example_backtest.yml
+
+mode: "backtest"
+
+strategy:
+  path: "strategy.imbalance:ImbalanceStrategy"
+  params:
+    instrument_ids: []  # Populated from universe resolution
+    imbalance_threshold: 0.3
+    trade_size: 10.0
+    take_profit: 0.05
+    stop_loss: -0.03
+
+# Leave condition_ids empty to use all discovered markets with --discover.
+# Or specify specific markets:
+# condition_ids:
+#   - "0xabc123..."
+condition_ids: []
+
+data:
+  hours:
+    - "2026-03-09T09"
+
+fees: "zero"  # Use "polymarket" for realistic fees
+
+starting_balance: 10000.0
+
+mlflow:
+  experiment: "imbalance-crypto-hourly"
+  parent_run: "v1-simple-threshold"
+  tags:
+    iteration: "1"
+    agent: "manual"
