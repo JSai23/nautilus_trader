@@ -5,7 +5,6 @@ Per IMPL_PLAN Block 4:
 - Resolution timer from instrument.expiration_ns
 - Price convergence detection
 - Configurable take-profit / stop-loss
-- HeldThrough tracking for failed exits
 """
 
 from __future__ import annotations
@@ -41,7 +40,6 @@ class PolymarketStrategy(Strategy):
     Handles:
     - Order book subscription on start
     - Exit lifecycle (resolution timer, convergence, take-profit, stop-loss)
-    - HeldThrough tracking for failed exits
     """
 
     def __init__(self, config: PolymarketStrategyConfig) -> None:
@@ -61,7 +59,6 @@ class PolymarketStrategy(Strategy):
         self._data_ended = False  # Set when end-of-data exit fires; blocks new entries
         self._exiting: set[InstrumentId] = set()
         self._closed: set[InstrumentId] = set()
-        self._held_through: dict[InstrumentId, bool] = {}
 
     def on_start(self) -> None:
         for instrument_id in self._instrument_ids:
@@ -203,7 +200,6 @@ class PolymarketStrategy(Strategy):
 
         book = self.cache.order_book(instrument_id)
         if book is None:
-            self._held_through[instrument_id] = True
             self._exiting.discard(instrument_id)
             return
 
@@ -220,7 +216,6 @@ class PolymarketStrategy(Strategy):
             price = book.best_ask_price()
 
         if price is None:
-            self._held_through[instrument_id] = True
             self._exiting.discard(instrument_id)
             return
 
@@ -234,7 +229,3 @@ class PolymarketStrategy(Strategy):
             time_in_force=TimeInForce.FOK,
         )
         self.submit_order(order)
-
-    @property
-    def held_through_instruments(self) -> list[InstrumentId]:
-        return [iid for iid, held in self._held_through.items() if held]

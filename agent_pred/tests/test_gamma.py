@@ -3,7 +3,6 @@
 Uses real Gamma API requests — no mocking.
 """
 
-import json
 import tempfile
 from pathlib import Path
 

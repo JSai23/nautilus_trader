@@ -54,6 +54,37 @@ def _adapt_metadata_for_testing(metadata: dict, hour: str) -> dict:
     return metadata
 
 
+def _resolve_test_metadata(condition_id: str, tokens: set[str], hour: str) -> dict:
+    """Resolve market metadata for tests: cache -> CLOB API -> fabricated fallback."""
+    cached = _MARKET_CACHE.get(condition_id)
+    if cached:
+        log.info("Using cached metadata for %s", condition_id[:16])
+        return _adapt_metadata_for_testing(cached, hour)
+
+    clob = fetch_market_clob(condition_id)
+    if clob:
+        _MARKET_CACHE.put(clob)
+        log.info("Fetched CLOB API metadata for %s", condition_id[:16])
+        return _adapt_metadata_for_testing(clob, hour)
+
+    log.warning("No API metadata for %s — using fabricated metadata", condition_id[:16])
+    token_list = []
+    for i, tid in enumerate(sorted(tokens)):
+        outcome = "Yes" if i == 0 else "No"
+        token_list.append({"token_id": tid, "outcome": outcome})
+
+    return {
+        "condition_id": condition_id,
+        "question": f"Test market {condition_id[:16]}",
+        "minimum_tick_size": "0.01",
+        "minimum_order_size": "1",
+        "end_date_iso": "2027-12-31T00:00:00Z",
+        "maker_base_fee": "0",
+        "taker_base_fee": "0",
+        "tokens": token_list,
+    }
+
+
 def discover_market_with_tokens(hour: str) -> dict:
     """Discover a market from PMXT data and extract token_ids.
 
@@ -96,36 +127,7 @@ def discover_market_with_tokens(hour: str) -> dict:
         len(market_rows[best_market]),
     )
 
-    # Prefer real metadata from cache, then CLOB API
-    cached = _MARKET_CACHE.get(best_market)
-    if cached:
-        log.info("Using cached metadata for %s", best_market[:16])
-        return _adapt_metadata_for_testing(cached, hour)
-
-    # Try CLOB API for real metadata
-    clob = fetch_market_clob(best_market)
-    if clob:
-        _MARKET_CACHE.put(clob)
-        log.info("Fetched CLOB API metadata for %s", best_market[:16])
-        return _adapt_metadata_for_testing(clob, hour)
-
-    # Fallback: fabricated metadata when neither cache nor API has this market
-    log.warning("No API metadata for %s — using fabricated metadata", best_market[:16])
-    token_list = []
-    for i, tid in enumerate(sorted(tokens)):
-        outcome = "Yes" if i == 0 else "No"
-        token_list.append({"token_id": tid, "outcome": outcome})
-
-    return {
-        "condition_id": best_market,
-        "question": f"Test market {best_market[:16]}",
-        "minimum_tick_size": "0.01",
-        "minimum_order_size": "1",
-        "end_date_iso": "2027-12-31T00:00:00Z",
-        "maker_base_fee": "0",
-        "taker_base_fee": "0",
-        "tokens": token_list,
-    }
+    return _resolve_test_metadata(best_market, tokens, hour)
 
 
 def discover_volatile_market(hour: str) -> dict:
@@ -189,33 +191,4 @@ def discover_volatile_market(hour: str) -> dict:
     tokens = market_tokens[best_mid]
     log.info("Volatile market %s, gap=%.3f, %d tokens", best_mid[:16], best_gap, len(tokens))
 
-    # Prefer real metadata from cache, then CLOB API
-    cached = _MARKET_CACHE.get(best_mid)
-    if cached:
-        log.info("Using cached metadata for %s", best_mid[:16])
-        return _adapt_metadata_for_testing(cached, hour)
-
-    # Try CLOB API for real metadata
-    clob = fetch_market_clob(best_mid)
-    if clob:
-        _MARKET_CACHE.put(clob)
-        log.info("Fetched CLOB API metadata for %s", best_mid[:16])
-        return _adapt_metadata_for_testing(clob, hour)
-
-    # Fallback: fabricated metadata when neither cache nor API has this market
-    log.warning("No API metadata for %s — using fabricated metadata", best_mid[:16])
-    token_list = []
-    for i, tid in enumerate(sorted(tokens)):
-        outcome = "Yes" if i == 0 else "No"
-        token_list.append({"token_id": tid, "outcome": outcome})
-
-    return {
-        "condition_id": best_mid,
-        "question": f"Volatile market {best_mid[:16]}",
-        "minimum_tick_size": "0.01",
-        "minimum_order_size": "1",
-        "end_date_iso": "2027-12-31T00:00:00Z",
-        "maker_base_fee": "0",
-        "taker_base_fee": "0",
-        "tokens": token_list,
-    }
+    return _resolve_test_metadata(best_mid, tokens, hour)

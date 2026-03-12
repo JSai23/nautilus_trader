@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections import deque
 
 from nautilus_trader.common.events import TimeEvent
-from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_trader.model.events.position import PositionClosed
 from nautilus_trader.model.identifiers import InstrumentId
@@ -59,9 +58,6 @@ class MeanReversionStrategy(PolymarketStrategy):
             if instrument_id in self._exiting or instrument_id in self._closed:
                 continue
             self._check_instrument(instrument_id)
-
-    def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
-        super().on_order_book_deltas(deltas)
 
     def _check_instrument(self, instrument_id: InstrumentId) -> None:
         book = self.cache.order_book(instrument_id)
