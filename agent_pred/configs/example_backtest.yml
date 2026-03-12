@@ -1,10 +1,13 @@
 # Example backtest configuration
 #
-# With auto-discovery (no pre-cached metadata needed):
+# With Gamma API discovery:
 #   uv run python scripts/run_backtest.py configs/example_backtest.yml --discover
 #
 # With pre-cached metadata:
 #   uv run python scripts/run_backtest.py configs/example_backtest.yml
+#
+# Refresh cached metadata:
+#   uv run python scripts/run_backtest.py configs/example_backtest.yml --discover --refresh-metadata
 
 mode: "backtest"
 
@@ -18,11 +21,21 @@ strategy:
     take_profit: null
     stop_loss: null
 
-# Leave condition_ids empty to use all discovered markets with --discover.
+# Leave condition_ids empty to use discovery or cached markets.
 # Or specify specific markets:
 # condition_ids:
 #   - "0xabc123..."
 condition_ids: []
+
+max_markets: 20  # Cap discovery to keep backtest <5 min
+
+# Gamma API discovery filters (used with --discover flag)
+discovery:
+  active: true
+  closed: false
+  min_volume: 1000
+  max_markets: 20
+  categories: []  # e.g. ["crypto", "politics"]
 
 data:
   hours:

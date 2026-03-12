@@ -1,0 +1,55 @@
+# Momentum breakout strategy — enter on sustained directional movement
+#
+# Tracks consecutive up/down price moves across intervals. Enters after
+# breakout_periods consecutive up-moves, exits on reversal or hold timeout.
+#
+# Run:
+#   uv run python scripts/run_backtest.py configs/momentum_breakout.yml --discover
+
+mode: "backtest"
+
+strategy:
+  path: "strategy.momentum_breakout:MomentumBreakoutStrategy"
+  params:
+    instrument_ids: []
+    trade_size: 1.0
+    check_interval_minutes: 1
+    breakout_periods: 2
+    hold_periods: 6
+    reversal_periods: 2
+    max_spread: 0.20
+    max_entry_price: 0.92
+    min_entry_price: 0.08
+    convergence_threshold: 0.99
+    take_profit: null
+    stop_loss: null
+
+# Volatile markets with significant intra-hour price movement (gap > 0.10)
+condition_ids:
+  - "0x884c293e9eeeda6065f05e75fca16fd4d67b5fb911ee854b1bed58c785d3b33d"
+  - "0x43e8c6312bc19e346a090e2c2364aa09f8a73a594230a2fb183ad42c02e5a094"
+  - "0xbce2010b2d4d705aac9ff546bde7931833ad505e7d56479b5d1e472096f04619"
+  - "0x98a9cdc64bda92048e05a13a7f51e0bacf6a1b418daa82c4bc30ea6a832b7d0a"
+  - "0xeb174ae2a2d09c69ffdb76b24aba79f02a62bde826d448cfe48d582c6becce0a"
+  - "0x56658d1dae18984beeeee164ff3b31048b13602198b8fb53b0b9baf7bc361d65"
+  - "0xfd34ebc39322ab79390b3f14e4262faf0a17a4973d4f056e70af3da50fbff755"
+  - "0x1ebd1a148081ef18fe12ee9a08410636354b815610fa975835b763c022afb8c0"
+  - "0x91064026f9cf000d06ce3a3baf5fd8d81aacc36741f26b78eb9743721195b7d8"
+  - "0x59092d39fc88b9fec0bd5200cc03d47517b158aced955dcf7bac8342f7117c35"
+
+data:
+  hours:
+    - "2026-03-09T08"
+    - "2026-03-09T09"
+    - "2026-03-09T10"
+
+fees: "zero"
+
+starting_balance: 10000.0
+
+mlflow:
+  experiment: "momentum-breakout-test"
+  parent_run: "v1-baseline"
+  tags:
+    agent: "multi-strategy"
+    purpose: "framework-validation"

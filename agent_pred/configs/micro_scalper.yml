@@ -1,0 +1,48 @@
+# Micro scalper stress test — high-frequency mean reversion
+#
+# Goal: 50+ trades to stress-test the full pipeline
+#
+# Iteration 3: Improved filters (ceiling/floor, moderate spread, bid-vs-entry
+# profit target). Win rate is 0% because aggressive FOK execution on
+# Polymarket binary options loses at least 1 tick per round trip, and no
+# instrument shows bid crossing above a previous ask across 7+ hours of data.
+# This is a market microstructure limitation, not a code bug.
+#
+# Run:
+#   uv run python scripts/run_backtest.py configs/micro_scalper.yml --discover
+
+mode: "backtest"
+
+strategy:
+  path: "strategy.micro_scalper:MicroScalperStrategy"
+  params:
+    instrument_ids: []  # Populated from universe resolution
+    trade_size: 1.0  # Minimum size — ensures FOK fills on thin books
+    max_spread: 0.30  # Moderate filter — blocks 87c+ spreads, keeps tradeable books
+    ema_alpha: 0.3
+    entry_dip_ticks: 0  # Enter when mid <= EMA (frequent entries for stress test)
+    max_hold_updates: 10  # Quick time-stop for many round trips
+    cooldown_updates: 1  # Fast re-entry
+    convergence_threshold: 0.99  # Very high — don't let convergence exits steal trades
+    take_profit: null
+    stop_loss: null
+
+condition_ids: []  # Use discovered markets, capped by max_markets
+
+max_markets: 20  # Cap discovery to keep backtest <5 min
+
+data:
+  hours:
+    - "2026-03-09T09"
+
+fees: "zero"
+
+starting_balance: 10000.0
+
+mlflow:
+  experiment: "micro-scalper-stress-test"
+  parent_run: "v3-filtered"
+  tags:
+    iteration: "3"
+    agent: "stress-test"
+    purpose: "framework-validation-filtered"

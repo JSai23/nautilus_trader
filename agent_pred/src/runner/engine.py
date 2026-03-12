@@ -11,9 +11,8 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -27,14 +26,26 @@ from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Money
 
 from pmxt.generator import pmxt_data_generator
+from pmxt.index import PMXTIndex
 from runner.mlflow_logger import MLflowLogger
 from runner.tearsheet import Tearsheet, compute_tearsheet
 from universe.instruments import build_instrument_maps
-from universe.resolver import UniverseResolver
 
 log = logging.getLogger(__name__)
 
 POLYMARKET_VENUE = Venue("POLYMARKET")
+
+
+@dataclass
+class DiscoveryConfig:
+    """Filter criteria for Gamma API market discovery."""
+
+    active: bool | None = True
+    closed: bool | None = False
+    min_volume: float = 0.0
+    max_markets: int = 50
+    categories: list[str] = field(default_factory=list)
+    slug_contains: str | None = None
 
 
 @dataclass
@@ -50,7 +61,9 @@ class ExperimentConfig:
     mlflow_variant: str = ""
     mlflow_tags: dict[str, str] = field(default_factory=dict)
     starting_balance: float = 10_000.0
+    max_markets: int = 50  # Cap on discovered markets (0 = no cap)
     paper_duration_seconds: int = 3600
+    discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
 
     @classmethod
     def from_yaml(cls, path: Path) -> ExperimentConfig:
@@ -60,6 +73,16 @@ class ExperimentConfig:
         strategy = raw.get("strategy", {})
         data = raw.get("data", {})
         mlflow = raw.get("mlflow", {})
+        disc_raw = raw.get("discovery", {})
+
+        discovery = DiscoveryConfig(
+            active=disc_raw.get("active", True),
+            closed=disc_raw.get("closed", False),
+            min_volume=disc_raw.get("min_volume", 0.0),
+            max_markets=disc_raw.get("max_markets", raw.get("max_markets", 50)),
+            categories=disc_raw.get("categories", []),
+            slug_contains=disc_raw.get("slug_contains"),
+        )
 
         return cls(
             mode=raw["mode"],
@@ -73,7 +96,9 @@ class ExperimentConfig:
             mlflow_variant=mlflow.get("parent_run", ""),
             mlflow_tags=mlflow.get("tags", {}),
             starting_balance=raw.get("starting_balance", 10_000.0),
+            max_markets=raw.get("max_markets", 50),
             paper_duration_seconds=raw.get("paper", {}).get("duration_seconds", 3600),
+            discovery=discovery,
         )
 
 
@@ -164,6 +189,11 @@ def run_backtest(
         for instrument in instruments.values():
             engine.add_instrument(instrument)
 
+        # Build data index for cache lookups
+        index = None
+        if data_cache_dir:
+            index = PMXTIndex(data_cache_dir / "index.json")
+
         # Build data generator
         gen = pmxt_data_generator(
             market_ids=market_ids,
@@ -171,6 +201,7 @@ def run_backtest(
             instruments=instruments,
             instrument_ids=instrument_ids,
             cache_dir=data_cache_dir,
+            index=index,
         )
 
         engine.add_data_iterator("pmxt", gen)
@@ -179,12 +210,25 @@ def run_backtest(
         instrument_id_strs = [str(iid) for iid in instrument_ids.values()]
         config.strategy_params["instrument_ids"] = instrument_id_strs
 
-        # Compute end-of-data time so strategy exits before book goes stale
-        if config.data_hours:
-            last_hour = sorted(config.data_hours)[-1]
-            dt = datetime.strptime(last_hour, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
-            end_dt = dt + timedelta(hours=1)
-            config.strategy_params["end_time_ns"] = int(end_dt.timestamp() * 1_000_000_000)
+        # Compute data time range for engine clock initialization.
+        # Note: add_data_iterator() doesn't populate self._data, so we must
+        # provide explicit start/end. Without them the engine defaults
+        # start_ns=0 (epoch), causing set_timer() to spin millions of ticks.
+        sorted_hours = sorted(config.data_hours)
+        first_hour = sorted_hours[0]
+        last_hour = sorted_hours[-1]
+        start_dt = datetime.strptime(first_hour, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
+        end_dt = (
+            datetime.strptime(last_hour, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
+            + timedelta(hours=1)
+        )
+
+        # Tell strategies the data window so timers are bounded correctly.
+        # start_time_ns prevents set_timer() from firing before data arrives
+        # (defense against add_data_iterator epoch bug).
+        # end_time_ns triggers position exit before book goes stale.
+        config.strategy_params["start_time_ns"] = int(start_dt.timestamp() * 1_000_000_000)
+        config.strategy_params["end_time_ns"] = int(end_dt.timestamp() * 1_000_000_000)
 
         # Import strategy and its config class (convention: StrategyConfig in same module)
         strategy_cls = _import_strategy_class(config.strategy_path)
@@ -196,9 +240,9 @@ def run_backtest(
         strategy = strategy_cls(strategy_config)
         engine.add_strategy(strategy)
 
-        # Run
+        # Run with explicit time range to initialize clocks correctly
         log.info("Starting backtest: %d hours of data", len(config.data_hours))
-        engine.run()
+        engine.run(start=start_dt, end=end_dt)
         elapsed = time.time() - start_time
         log.info("Backtest completed in %.1fs", elapsed)
 

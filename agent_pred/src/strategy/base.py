@@ -10,24 +10,28 @@ Per IMPL_PLAN Block 4:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
+import pandas as pd
+
+from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import OrderBookDelta, OrderBookDeltas
 from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.trading.strategy import Strategy
+
+INTERVAL_TIMER_NAME = "polymarket_interval"
 
 
 class PolymarketStrategyConfig(StrategyConfig, frozen=True):
     instrument_ids: list[str] = []
+    check_interval_minutes: int = 0  # >0 enables recurring on_interval() timer
     exit_before_resolution_secs: int = 300
     convergence_threshold: float = 0.95
-    max_exit_retries: int = 3
     take_profit: float | None = None
     stop_loss: float | None = None
+    start_time_ns: int = 0  # Start of data window (ns epoch). Safety bound for timers.
     end_time_ns: int = 0  # End of data window (ns epoch). Triggers exit 60s before.
 
 
@@ -45,12 +49,13 @@ class PolymarketStrategy(Strategy):
         self._instrument_ids: list[InstrumentId] = [
             InstrumentId.from_str(iid) for iid in config.instrument_ids
         ]
+        self._check_interval_minutes = config.check_interval_minutes
         self._exit_before_resolution_secs = config.exit_before_resolution_secs
         self._convergence_threshold = config.convergence_threshold
-        self._max_exit_retries = config.max_exit_retries
         self._take_profit = config.take_profit
         self._stop_loss = config.stop_loss
 
+        self._start_time_ns = config.start_time_ns
         self._end_time_ns = config.end_time_ns
 
         self._data_ended = False  # Set when end-of-data exit fires; blocks new entries
@@ -80,6 +85,41 @@ class PolymarketStrategy(Strategy):
                     name="end_of_data_exit",
                     alert_time_ns=exit_ns,
                 )
+
+        # Recurring interval timer for subclass on_interval() callbacks.
+        # start_time_ns bounds the timer so it won't fire before data starts.
+        # Without it, add_data_iterator() causes engine.run() to default
+        # start_ns=0 (epoch), creating millions of empty timer ticks.
+        if self._check_interval_minutes > 0:
+            if self._start_time_ns == 0:
+                self.log.warning(
+                    "check_interval_minutes=%d but start_time_ns=0 — "
+                    "timer will fire from engine clock start. "
+                    "Set start_time_ns via run_backtest() or engine config.",
+                    self._check_interval_minutes,
+                )
+            timer_kwargs: dict[str, Any] = {
+                "name": INTERVAL_TIMER_NAME,
+                "interval": pd.Timedelta(minutes=self._check_interval_minutes),
+                "callback": self._on_interval_event,
+            }
+            if self._start_time_ns > 0:
+                timer_kwargs["start_time"] = pd.Timestamp(
+                    self._start_time_ns, unit="ns", tz="UTC"
+                )
+            if self._end_time_ns > 0:
+                timer_kwargs["stop_time"] = pd.Timestamp(
+                    self._end_time_ns, unit="ns", tz="UTC"
+                )
+            self.clock.set_timer(**timer_kwargs)
+
+    def _on_interval_event(self, event: TimeEvent) -> None:
+        """Dispatch interval timer events to subclass on_interval()."""
+        if not self._data_ended:
+            self.on_interval(event)
+
+    def on_interval(self, event: TimeEvent) -> None:
+        """Called on each interval timer tick. Override in subclasses."""
 
     def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
         instrument_id = deltas.instrument_id
@@ -161,24 +201,6 @@ class PolymarketStrategy(Strategy):
             self._exiting.discard(instrument_id)
             return
 
-        self._attempt_exit(instrument_id, attempt=0)
-
-    def _attempt_exit(self, instrument_id: InstrumentId, attempt: int) -> None:
-        if attempt >= self._max_exit_retries:
-            self.log.warning(
-                f"HeldThrough: {instrument_id}, failed_exits={attempt}"
-            )
-            self._held_through[instrument_id] = True
-            self._exiting.discard(instrument_id)
-            return
-
-        open_positions = self.cache.positions_open(instrument_id=instrument_id)
-        position = open_positions[0] if open_positions else None
-        if position is None:
-            self._closed.add(instrument_id)
-            self._exiting.discard(instrument_id)
-            return
-
         book = self.cache.order_book(instrument_id)
         if book is None:
             self._held_through[instrument_id] = True
@@ -201,14 +223,6 @@ class PolymarketStrategy(Strategy):
             self._held_through[instrument_id] = True
             self._exiting.discard(instrument_id)
             return
-
-        # Worsen price by attempt * tick_size
-        if attempt > 0:
-            tick = float(instrument.price_increment)
-            if side == OrderSide.SELL:
-                price = instrument.make_price(float(price) - tick * attempt)
-            else:
-                price = instrument.make_price(float(price) + tick * attempt)
 
         qty = instrument.make_qty(abs(float(position.quantity)))
 
