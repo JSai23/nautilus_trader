@@ -1,6 +1,6 @@
 """PolymarketStrategy base class with safe exit defaults.
 
-Per IMPL_PLAN Block 4:
+Exit lifecycle:
 - Limit-order FOK exit (close_position is broken on Polymarket)
 - Resolution timer from instrument.expiration_ns
 - Price convergence detection

@@ -28,6 +28,9 @@ CLOB_API_BASE = "https://clob.polymarket.com"
 # Default page size for Gamma API pagination
 _PAGE_SIZE = 100
 
+# Max pages to fetch before giving up (safety limit against infinite pagination)
+_MAX_PAGES = 20
+
 
 @dataclass
 class MarketFilter:
@@ -109,9 +112,33 @@ def fetch_all_markets(filter: MarketFilter) -> list[dict[str, Any]]:
     Server-side filters are handled by fetch_markets().
     Client-side filters (slug_contains, categories) are applied here.
     Fetches up to filter.max_markets results.
+
+    When client-side filters are active and no explicit ordering is set,
+    defaults to startDate descending (newest first) so recent matches
+    are found quickly instead of paging through thousands of old markets.
     """
+    # Default to newest-first when using client-side filters without explicit order.
+    # Without this, slug_contains pages through ALL markets from oldest,
+    # effectively hanging on large result sets.
+    has_client_filter = filter.slug_contains or filter.categories
+    if has_client_filter and filter.order is None:
+        filter = MarketFilter(
+            active=filter.active,
+            closed=filter.closed,
+            end_date_min=filter.end_date_min,
+            end_date_max=filter.end_date_max,
+            start_date_min=filter.start_date_min,
+            volume_num_min=filter.volume_num_min,
+            order="startDate",
+            ascending=False,
+            slug_contains=filter.slug_contains,
+            categories=filter.categories,
+            max_markets=filter.max_markets,
+        )
+
     results: list[dict[str, Any]] = []
     offset = 0
+    pages = 0
 
     while len(results) < filter.max_markets:
         batch = fetch_markets(filter=filter, offset=offset, limit=_PAGE_SIZE)
@@ -125,12 +152,22 @@ def fetch_all_markets(filter: MarketFilter) -> list[dict[str, Any]]:
                     break
 
         offset += len(batch)
+        pages += 1
 
         # Safety: stop if we got fewer than a full page (no more data)
         if len(batch) < _PAGE_SIZE:
             break
 
-    log.info("Fetched %d markets from Gamma API (offset reached %d)", len(results), offset)
+        # Safety: cap total pages to prevent infinite pagination
+        if pages >= _MAX_PAGES:
+            log.warning(
+                "Hit max pages (%d) with %d results found. "
+                "Consider narrowing server-side filters.",
+                _MAX_PAGES, len(results),
+            )
+            break
+
+    log.info("Fetched %d markets from Gamma API (pages=%d, offset=%d)", len(results), pages, offset)
     return results
 
 

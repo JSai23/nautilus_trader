@@ -1,0 +1,42 @@
+# Bug bash: micro_scalper via slug discovery
+# Second tick-pattern strategy to verify tick strategies work generally
+
+mode: "backtest"
+
+strategy:
+  path: "experiments.strategies.micro_scalper:MicroScalperStrategy"
+  params:
+    instrument_ids: []
+    trade_size: 5.0
+    max_spread: 0.25
+    ema_alpha: 0.3
+    entry_dip_ticks: 1
+    max_hold_updates: 50
+    cooldown_updates: 5
+    tick_size: 0.01
+    max_entry_price: 0.95
+    min_entry_price: 0.05
+    convergence_threshold: 0.99
+    take_profit: null
+    stop_loss: null
+
+universe:
+  slug_contains: "btc-updown-4h"
+  active: true
+  max_markets: 5
+
+data:
+  hours:
+    - "2026-03-13T10"
+    - "2026-03-13T11"
+    - "2026-03-13T12"
+
+fees: "zero"
+
+starting_balance: 10000.0
+
+mlflow:
+  experiment: "bug-bash"
+  parent_run: "micro-scalper-slug"
+  tags:
+    purpose: "bug-bash-micro"

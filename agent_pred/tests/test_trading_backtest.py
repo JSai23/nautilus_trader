@@ -21,14 +21,14 @@ from nautilus_trader.model.objects import Money
 from pmxt.reader import read_local_filtered
 from pmxt.transformer import transform_row
 from runner.tearsheet import compute_tearsheet
-from strategy.imbalance import ImbalanceStrategy, ImbalanceStrategyConfig
-from strategy.mean_reversion import MeanReversionStrategy, MeanReversionStrategyConfig
-from strategy.micro_scalper import MicroScalperStrategy, MicroScalperStrategyConfig
-from strategy.momentum_breakout import MomentumBreakoutStrategy, MomentumBreakoutStrategyConfig
-from strategy.random_baseline import RandomBaselineStrategy, RandomBaselineStrategyConfig
-from strategy.simple_test import SimpleTestStrategy, SimpleTestStrategyConfig
-from strategy.spread_scalper import SpreadScalperStrategy, SpreadScalperStrategyConfig
-from strategy.timer_momentum import TimerMomentumStrategy, TimerMomentumStrategyConfig
+from experiments.strategies.imbalance import ImbalanceStrategy, ImbalanceStrategyConfig
+from experiments.strategies.mean_reversion import MeanReversionStrategy, MeanReversionStrategyConfig
+from experiments.strategies.micro_scalper import MicroScalperStrategy, MicroScalperStrategyConfig
+from experiments.strategies.momentum_breakout import MomentumBreakoutStrategy, MomentumBreakoutStrategyConfig
+from experiments.strategies.random_baseline import RandomBaselineStrategy, RandomBaselineStrategyConfig
+from experiments.strategies.simple_test import SimpleTestStrategy, SimpleTestStrategyConfig
+from experiments.strategies.spread_scalper import SpreadScalperStrategy, SpreadScalperStrategyConfig
+from experiments.strategies.timer_momentum import TimerMomentumStrategy, TimerMomentumStrategyConfig
 from universe.instruments import build_instrument_maps
 
 logging.basicConfig(level=logging.INFO)

@@ -1,7 +1,6 @@
 """Experiment runner — parses config, builds engine, runs strategy, reports results.
 
-Per IMPL_PLAN Block 10a, this is the central integration point.
-The LLM never touches this — agents write configs, the runner executes deterministically.
+Agents write configs, the runner executes deterministically.
 """
 
 from __future__ import annotations
@@ -131,7 +130,6 @@ class RunResult:
     orders_df: pd.DataFrame
     fills_df: pd.DataFrame
     positions_df: pd.DataFrame
-    account_df: pd.DataFrame
     elapsed_seconds: float = 0.0
     success: bool = True
     error: str | None = None
@@ -168,6 +166,16 @@ def run_backtest(
     if results_dir is None:
         results_dir = Path("results") / run_id
     results_dir.mkdir(parents=True, exist_ok=True)
+
+    # Register run as "running"
+    _write_status(results_dir, {
+        "run_id": run_id,
+        "status": "running",
+        "strategy": config.strategy_path,
+        "start_time": datetime.now(tz=timezone.utc).isoformat(),
+        "markets": len(market_infos),
+        "hours": len(config.data_hours),
+    })
 
     try:
         # Filter markets by condition_ids when specified
@@ -266,7 +274,6 @@ def run_backtest(
         orders_df = ReportProvider.generate_order_fills_report(orders)
         fills_df = ReportProvider.generate_fills_report(orders)
         positions_df = ReportProvider.generate_positions_report(positions)
-        account_df = pd.DataFrame()  # Account report needs Account object
 
         # Compute tearsheet from closed positions only — open positions
         # have no realized PnL and dilute win_rate/avg_trade_pnl.
@@ -275,7 +282,7 @@ def run_backtest(
             if closed_positions
             else pd.DataFrame()
         )
-        tearsheet = compute_tearsheet(closed_df, fills_df, account_df)
+        tearsheet = compute_tearsheet(closed_df, fills_df)
 
         result = RunResult(
             run_id=run_id,
@@ -284,7 +291,6 @@ def run_backtest(
             orders_df=orders_df,
             fills_df=fills_df,
             positions_df=positions_df,
-            account_df=account_df,
             elapsed_seconds=elapsed,
         )
 
@@ -295,12 +301,35 @@ def run_backtest(
         if config.mlflow_experiment:
             _log_to_mlflow(result, results_dir, mlflow_tracking_uri)
 
+        # Mark run as completed
+        _write_status(results_dir, {
+            "run_id": run_id,
+            "status": "completed",
+            "strategy": config.strategy_path,
+            "start_time": datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat(),
+            "end_time": datetime.now(tz=timezone.utc).isoformat(),
+            "elapsed_seconds": elapsed,
+            "total_pnl": tearsheet.total_pnl,
+            "num_trades": tearsheet.num_trades,
+        })
+
         engine.dispose()
         return result
 
     except Exception as e:
         elapsed = time.time() - start_time
         log.exception("Backtest failed: %s", e)
+
+        # Mark run as failed
+        _write_status(results_dir, {
+            "run_id": run_id,
+            "status": "failed",
+            "strategy": config.strategy_path,
+            "start_time": datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat(),
+            "end_time": datetime.now(tz=timezone.utc).isoformat(),
+            "elapsed_seconds": elapsed,
+            "error": str(e),
+        })
 
         result = RunResult(
             run_id=run_id,
@@ -309,7 +338,6 @@ def run_backtest(
             orders_df=pd.DataFrame(),
             fills_df=pd.DataFrame(),
             positions_df=pd.DataFrame(),
-            account_df=pd.DataFrame(),
             elapsed_seconds=elapsed,
             success=False,
             error=str(e),
@@ -321,6 +349,12 @@ def run_backtest(
             json.dump({"error": str(e), "run_id": run_id}, f, indent=2)
 
         return result
+
+
+def _write_status(results_dir: Path, status: dict[str, Any]) -> None:
+    """Write run status to a JSON file for observability."""
+    with open(results_dir / "status.json", "w") as f:
+        json.dump(status, f, indent=2)
 
 
 def _save_artifacts(result: RunResult, results_dir: Path) -> None:
@@ -336,9 +370,6 @@ def _save_artifacts(result: RunResult, results_dir: Path) -> None:
         result.fills_df.to_csv(results_dir / "fills.csv")
     if not result.positions_df.empty:
         result.positions_df.to_csv(results_dir / "positions.csv")
-    if not result.account_df.empty:
-        result.account_df.to_csv(results_dir / "account.csv")
-
     # Metadata
     metadata = {
         "run_id": result.run_id,

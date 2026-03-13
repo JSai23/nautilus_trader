@@ -2,9 +2,9 @@
 """Run a backtest or paper trading session from a config YAML file.
 
 Usage:
-    uv run python scripts/run_backtest.py configs/example_backtest.yml
-    uv run python scripts/run_backtest.py configs/paper_momentum.yml
-    uv run python scripts/run_backtest.py configs/example_backtest.yml --results-dir results/my_run
+    uv run python scripts/run_backtest.py experiments/configs/example_backtest.yml
+    uv run python scripts/run_backtest.py experiments/configs/paper_momentum.yml
+    uv run python scripts/run_backtest.py experiments/configs/example_backtest.yml --results-dir results/my_run
 
 Market resolution:
     - If condition_ids are in the config, fetches metadata from CLOB API.

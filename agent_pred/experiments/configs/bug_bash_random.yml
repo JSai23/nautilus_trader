@@ -1,0 +1,42 @@
+# Bug bash: random_baseline via slug discovery
+# Control strategy — random entry with p=0.5, no signal logic
+# Tests that framework handles timer-based strategies with slug discovery
+
+mode: "backtest"
+
+strategy:
+  path: "experiments.strategies.random_baseline:RandomBaselineStrategy"
+  params:
+    instrument_ids: []
+    trade_size: 5.0
+    check_interval_minutes: 1
+    entry_probability: 0.5
+    hold_periods: 4
+    max_spread: 0.30
+    max_entry_price: 0.95
+    min_entry_price: 0.05
+    convergence_threshold: 0.99
+    take_profit: null
+    stop_loss: null
+    seed: 42
+
+universe:
+  slug_contains: "btc-updown-4h"
+  active: true
+  max_markets: 5
+
+data:
+  hours:
+    - "2026-03-13T10"
+    - "2026-03-13T11"
+    - "2026-03-13T12"
+
+fees: "zero"
+
+starting_balance: 10000.0
+
+mlflow:
+  experiment: "bug-bash"
+  parent_run: "random-baseline-slug"
+  tags:
+    purpose: "bug-bash-random"

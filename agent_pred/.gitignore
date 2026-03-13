@@ -9,3 +9,6 @@ mlflow.db
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Dev loop artifacts
+agents/

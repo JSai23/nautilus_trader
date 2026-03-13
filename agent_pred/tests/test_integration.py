@@ -18,7 +18,7 @@ from nautilus_trader.model.objects import Money
 from conftest import discover_market_with_tokens
 from pmxt.generator import pmxt_data_generator
 from universe.instruments import build_instrument_maps
-from strategy.log_only import LogOnlyStrategy, LogOnlyStrategyConfig
+from experiments.strategies.log_only import LogOnlyStrategy, LogOnlyStrategyConfig
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)

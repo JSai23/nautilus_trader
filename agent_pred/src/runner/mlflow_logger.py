@@ -1,6 +1,5 @@
 """MLflow logging with experiment/variant/child-run hierarchy.
 
-Per IMPL_PLAN Section 5.3:
 - Experiment = strategy idea (e.g., "orderbook-imbalance")
 - Run = variant (e.g., "v1-simple-threshold")
 - Child Run = individual execution (auto-tagged with git_sha, params, dates, mode)
@@ -16,6 +15,16 @@ from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+
+def _build_run_name(tags: dict[str, str], params: dict[str, Any]) -> str:
+    """Build a descriptive child run name from tags and params."""
+    strategy = tags.get("strategy_file", "")
+    name = strategy.split(":")[-1] if ":" in strategy else strategy
+    market_count = len(params.get("instrument_ids", []))
+    date_range = tags.get("date_range", "")
+    parts = [p for p in [name, f"{market_count}m", date_range] if p]
+    return "_".join(parts) or "run"
 
 
 def _get_git_sha() -> str:
@@ -92,8 +101,11 @@ class MLflowLogger:
         if tags:
             all_tags.update(tags)
 
+        run_name = _build_run_name(tags or {}, params)
+
         with mlflow.start_run(
             experiment_id=experiment_id,
+            run_name=run_name,
             tags=all_tags,
             nested=True,
         ) as child_run:

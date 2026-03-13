@@ -1,7 +1,6 @@
 """Tearsheet computation from backtest results.
 
-Per IMPL_PLAN Section 5.2, computes 8 core metrics from
-ReportProvider DataFrames.
+Computes core metrics from ReportProvider DataFrames.
 
 PnL is computed from fills (BUY/SELL pairs per instrument), NOT from
 Position.realized_pnl. In NETTING mode with re-entry, the positions
@@ -77,24 +76,12 @@ def _compute_round_trip_pnls(fills_df: pd.DataFrame) -> list[float]:
 def compute_tearsheet(
     positions_df: pd.DataFrame,
     fills_df: pd.DataFrame,
-    account_df: pd.DataFrame | None = None,
 ) -> Tearsheet:
     """Compute tearsheet metrics from ReportProvider DataFrames.
 
     PnL metrics are derived from fills (BUY/SELL pairs), not from
     Position.realized_pnl, because the positions report under-reports
     PnL in NETTING mode with re-entry strategies.
-
-    Parameters
-    ----------
-    positions_df : pd.DataFrame
-        Output of ReportProvider.generate_positions_report().
-        Used only for num_positions count.
-    fills_df : pd.DataFrame
-        Output of ReportProvider.generate_fills_report().
-        Primary source for all PnL metrics.
-    account_df : pd.DataFrame | None
-        Output of ReportProvider.generate_account_report().
     """
     ts = Tearsheet()
 

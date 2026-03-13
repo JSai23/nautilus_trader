@@ -1,6 +1,6 @@
 """Transform PMXT parquet rows into NautilusTrader OrderBookDelta/OrderBookDeltas.
 
-Field mapping per IMPL_PLAN.md Section 3.5:
+Field mapping:
 - price_change -> OrderBookDelta (UPDATE or DELETE based on change_size)
 - book_snapshot -> OrderBookDeltas (CLEAR + ADD for each level)
 
@@ -39,7 +39,7 @@ def transform_price_change(
 ) -> OrderBookDelta:
     """Transform a PMXT price_change JSON blob into an OrderBookDelta.
 
-    Per IMPL_PLAN Section 3.5:
+    Mapping:
     - change_size == "0" -> BookAction.DELETE
     - change_side "BUY" -> OrderSide.BUY, "SELL" -> OrderSide.SELL
     - price/size via instrument.make_price/make_qty
@@ -84,7 +84,7 @@ def transform_book_snapshot(
 ) -> OrderBookDeltas:
     """Transform a PMXT book_snapshot JSON blob into OrderBookDeltas.
 
-    Per IMPL_PLAN Section 3.5:
+    Mapping:
     - First delta: CLEAR action
     - Then ADD for each bid (BUY side) and ask (SELL side)
     - F_LAST flag on the final delta

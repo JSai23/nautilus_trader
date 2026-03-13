@@ -1,0 +1,50 @@
+# Tick-counter stress test — high-volume infrastructure validation
+#
+# Trades on EVERY subscribed market: buy after 3 ticks, sell 15 ticks later, repeat.
+# Target: hundreds of round trips to stress-test order, fill, position, and PnL pipeline.
+#
+# Run:
+#   uv run python scripts/run_backtest.py experiments/configs/tick_stress.yml
+
+mode: "backtest"
+
+strategy:
+  path: "experiments.strategies.tick_stress:TickStressStrategy"
+  params:
+    instrument_ids: []
+    trade_size: 5.0
+    buy_after_ticks: 3
+    sell_after_ticks: 15
+    sweep_ticks: 20
+    tick_size: 0.001
+    max_entry_price: 0.95
+    min_entry_price: 0.05
+    log_every_n_ticks: 500
+    convergence_threshold: 0.99
+    take_profit: null
+    stop_loss: null
+
+# Discover all active markets from Gamma API
+universe:
+  active: true
+  closed: false
+  max_markets: 25
+
+data:
+  hours:
+    - "2026-02-24T20"
+    - "2026-02-24T21"
+    - "2026-02-24T22"
+    - "2026-02-25T00"
+    - "2026-02-25T01"
+
+fees: "zero"
+
+starting_balance: 10000.0
+
+mlflow:
+  experiment: "tick-stress-test"
+  parent_run: "v1-high-volume"
+  tags:
+    agent: "stress-test"
+    purpose: "infrastructure-validation"

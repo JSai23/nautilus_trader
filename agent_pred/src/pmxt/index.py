@@ -1,6 +1,6 @@
 """PMXT data index — tracks what's cached locally and market coverage.
 
-Per IMPL_PLAN Section 3.6, the index is a simple JSON file:
+The index is a simple JSON file:
 {
   "markets": {
     "0xbcf53c26...": {

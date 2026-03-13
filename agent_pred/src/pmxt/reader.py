@@ -1,6 +1,6 @@
 """Read PMXT parquet data from remote (via fsspec HTTP range) or local cache.
 
-Design per IMPL_PLAN Section 3.6:
+Design:
 - Stream raw files via HTTP range requests (never download full raw file)
 - Filter rows to target market_ids using PyArrow predicate pushdown
 - Process one row group at a time (~1M rows, ~50MB) for memory safety
