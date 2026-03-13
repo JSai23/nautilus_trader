@@ -12,7 +12,7 @@ strategy:
   path: "strategy.spread_scalper:SpreadScalperStrategy"
   params:
     instrument_ids: []
-    trade_size: 1.0
+    trade_size: 5.0
     check_interval_minutes: 1
     spread_lookback: 10
     tight_spread_ratio: 0.6

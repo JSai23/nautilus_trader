@@ -1,0 +1,47 @@
+# Contrarian strategy — buy dips, bet on price rebound
+#
+# Run:
+#   uv run python scripts/run_backtest.py configs/contrarian.yml
+
+mode: "backtest"
+
+strategy:
+  path: "strategy.contrarian:ContrarianStrategy"
+  params:
+    instrument_ids: []
+    trade_size: 5.0
+    check_interval_minutes: 1
+    drop_threshold_pct: 0.02
+    lookback_periods: 15
+    hold_periods: 30
+    max_spread: 0.15
+    max_entry_price: 0.92
+    min_entry_price: 0.08
+    convergence_threshold: 0.99
+    take_profit: null
+    stop_loss: null
+
+# Volatile markets with end_date AFTER Feb 24 data window
+condition_ids:
+  - "0x2708c470f811bf9a98125878be3a8d006b91ca24bce041eac102b370269dfe16"  # ATX Open: Andreescu vs Galfi (end Mar 2)
+  - "0xda778ca3a0787453d0b146e445cf3b5acf99a756b97f99b26207a322ac5cda9f"  # Merida Open: Osorio vs Tjen (end Mar 2)
+  - "0x159940fd842e01f47faf5bdc7578b9ad640b8adf6f7ec47c8ded1fad78cb6894"  # Russia Rizdvianka (end Feb 28)
+  - "0xdc4b9ecbfac2c8e98fe18b35c4578a3c64e34ddfe16b1cf8a98ab3ad9d06c088"  # US/Israel strike Iran (end Dec 31)
+  - "0x139ba0e7f931f09466c0fb27fc8ddb5e77ce9d1e2bdc953a5f22765bf779452f"  # SCOTUS sports contracts (end Jul 31)
+
+data:
+  hours:
+    - "2026-02-24T20"
+    - "2026-02-24T21"
+    - "2026-02-24T22"
+
+fees: "zero"
+
+starting_balance: 10000.0
+
+mlflow:
+  experiment: "strategy-dev-loop"
+  parent_run: "contrarian-feb25"
+  tags:
+    agent: "strategy-dev"
+    purpose: "infrastructure-validation"

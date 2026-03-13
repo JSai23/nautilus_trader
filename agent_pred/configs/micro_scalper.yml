@@ -17,7 +17,7 @@ strategy:
   path: "strategy.micro_scalper:MicroScalperStrategy"
   params:
     instrument_ids: []  # Populated from universe resolution
-    trade_size: 1.0  # Minimum size — ensures FOK fills on thin books
+    trade_size: 5.0  # Matches real CLOB minimum_order_size
     max_spread: 0.30  # Moderate filter — blocks 87c+ spreads, keeps tradeable books
     ema_alpha: 0.3
     entry_dip_ticks: 0  # Enter when mid <= EMA (frequent entries for stress test)

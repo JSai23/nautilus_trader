@@ -12,7 +12,7 @@ strategy:
   path: "strategy.momentum_breakout:MomentumBreakoutStrategy"
   params:
     instrument_ids: []
-    trade_size: 1.0
+    trade_size: 5.0
     check_interval_minutes: 1
     breakout_periods: 2
     hold_periods: 6
