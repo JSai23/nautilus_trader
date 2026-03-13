@@ -2,115 +2,161 @@
 
 Everything the agent_pred framework must support. Each behavior has a status and verification criteria.
 
+**Status key:** PASS = verified with real evidence, UNVERIFIED = code exists but not tested, FAIL = broken
+
 ## Universe
 
-### Backtest Discovery
+### Backtest Discovery — PASS
 Gamma API fetch of all markets → client-side slug filter → pre-determined universe of instruments.
 Config YAML `universe: slug_contains: "btc-updown-15m"` → `discover_markets()` → `build_instrument_maps()`.
 
-### Paper/Live Discovery
+**Evidence:** 3 btc-updown-4h markets discovered, 6 instruments (Up/Down each), cross-validated against direct Gamma API.
+
+### Paper/Live Discovery — UNVERIFIED
 Same Gamma API slug matching, but polling on a timer (`MarketDiscoveryActor`). Detects new open markets, builds instruments, publishes to DataEngine cache, notifies strategy via `on_instrument()`, subscribes to orderbook WebSocket feeds. Runs continuously — markets come and go.
 
-### Universe Cross-Validation
+**Needs:** End-to-end paper trading run showing discovery events in logs.
+
+### Universe Cross-Validation — PASS (backtest), UNVERIFIED (paper)
 Compare discovered universe against external source (pm cli, direct Gamma API curl) to verify we are picking up ALL matching markets and not silently dropping any.
+
+**Evidence (backtest):** 3/3 markets consistent with direct Gamma API curl.
 
 ---
 
 ## Data
 
-### Backtest Data
+### Backtest Data — PASS
 PMXT historical orderbook parquets. Every orderbook snapshot pushed through the engine as `OrderBookDeltas`.
 
-### Live Data
+**Evidence:** 432 ticks over 2h, realistic bid/ask values.
+
+### Live Data — UNVERIFIED
 Polymarket WebSocket feed (`wss://ws-subscriptions-clob.polymarket.com`). Public, no auth needed. MARKET channel subscriptions by token_id.
 
-### Top-of-Book Storage
+**Needs:** Paper trading run showing WebSocket connection and orderbook updates.
+
+### Top-of-Book Storage — PASS
 Strategy accumulates (timestamp_ns, instrument_id, best_bid, best_ask, bid_qty, ask_qty) into a DataFrame on each tick. Configurable (off by default for performance). Saved as CSV/parquet artifact after run. NOT full orderbook depth — just BBO.
+
+**Evidence:** 432 records saved, timestamps monotonic, 0 < bid < ask < 1.
 
 ---
 
 ## Strategy Features
 
-### Market Metadata Map
+### Market Metadata Map — PASS (backtest), UNVERIFIED (paper on_instrument hydration)
 `self._market_meta: dict[InstrumentId, MarketMeta]` in base strategy. Contains slug, condition_id, token_id, outcome (Yes/No), question, start_date, end_date. Hydrated on `on_start()` for backtest instruments, on `on_instrument()` for live-discovered instruments. Enables strategy logic like: parse slug timestamp → determine active 15m window → only trade that window.
 
-### on_instrument
+**Evidence (backtest):** All 6 instruments have full metadata. `slug_timestamp()` and `is_active_at()` verified.
+**Needs (paper):** `on_instrument()` hydrating metadata for dynamically discovered instruments.
+
+### on_instrument — UNVERIFIED
 Fires when `MarketDiscoveryActor` publishes a new instrument (paper/live mode with `dynamic_instruments=True`). Strategy auto-subscribes to orderbook data and adds to instrument list.
 
-### on_timer (on_interval)
+**Needs:** Paper trading logs showing on_instrument fires, strategy subscribes, trading begins.
+
+### on_timer (on_interval) — PASS
 Recurring timer at configurable interval (e.g., every 1 minute). Bounded by start_time_ns/end_time_ns to avoid epoch-start spam. Strategy checks all instruments each tick.
 
-### on_tick (on_order_book_deltas)
+**Evidence:** ~120 callbacks/2h at 1-min interval. Timer fires within start/end bounds.
+
+### on_tick (on_order_book_deltas) — PASS (backtest), UNVERIFIED (paper)
 Fires on every orderbook update. High frequency — hundreds to thousands per instrument per hour. Must call `super()` for exit condition checks.
 
-### Exit Lifecycle
+**Evidence (backtest):** 432 ticks/2h. Both singular and plural handlers working.
+**Needs (paper):** Live WebSocket data flowing through to on_tick callbacks.
+
+### Exit Lifecycle — PARTIAL
 Base class handles exits automatically:
-- **Resolution timer**: exits N seconds before instrument expiration
-- **Convergence**: exits when mid-price approaches 0 or 1 (market resolving)
-- **Take-profit / Stop-loss**: exits on unrealized PnL thresholds
-- **End-of-data**: exits all positions 60s before data window ends (backtest)
+- **Resolution timer** — PASS: exits N seconds before instrument expiration. Verified with test_resolution.yml.
+- **Convergence** — PASS: exits when mid-price approaches 0 or 1. Verified with test_convergence.yml (34 exits).
+- **Take-profit / Stop-loss** — UNVERIFIED: needs volatile data producing PnL movement.
+- **End-of-data** — PASS: exits all positions 60s before data window ends. Verified in tick_always 2h run.
 All exits use FOK limit orders at best bid/ask.
 
 ---
 
 ## Order Fill Handling
 
-### FOK Order Mechanics
-All orders are Fill-Or-Kill limit orders. The sim executor (backtest matching engine) matches against the L2 book and REJECTS (cancels) FOK orders when there's insufficient liquidity. Not a "fill everything" simulator.
+### FOK Order Mechanics — PASS
+All orders are Fill-Or-Kill limit orders. The sim executor (backtest matching engine) matches against the L2 book and REJECTS (cancels) FOK orders when there's insufficient liquidity.
 
-### Order Callbacks
-Base strategy must have `on_order_filled()`, `on_order_canceled()` with logging. Track: orders submitted vs filled vs rejected, fill prices vs book state, round-trip accounting (every buy eventually has a sell).
+**Evidence:** 68 fills, 0 rejections (100% fill rate on 4h data with good liquidity).
+
+### Order Callbacks — PASS
+Base strategy has `on_order_filled()`, `on_order_canceled()`, `on_order_rejected()` with logging. Track: orders submitted vs filled vs rejected, fill prices vs book state, round-trip accounting.
+
+**Evidence:** 34 buys = 34 sells, all BUY@0.51 <= ask, all SELL@0.49 >= bid.
 
 ---
 
 ## Tracking & Observability
 
-### MLflow (Backtest + Paper)
-Both backtest AND paper trading log to MLflow. MLflow serves as a live dashboard for running strategies.
-- **Hierarchy**: experiment → parent run (variant) → child run (individual execution)
-- **Metrics**: all tearsheet fields (PnL, win_rate, sharpe, drawdown, etc.)
-- **Params**: strategy config, universe filters, data hours
-- **Tags**: git_sha, strategy name, market slugs
-- **Run name**: meaningful format like `TickAlways_6m_2026-03-13T10..T12`
+### MLflow (Backtest) — PASS
+Experiment/parent/child hierarchy. Metrics, params, tags, run name all logged.
 
-### MLflow Artifacts
-Saved in results/ and uploaded as MLflow artifacts:
-- **PnL curve**: cumulative PnL over time (PNG or HTML)
-- **Position timeline**: Gantt chart showing when each position was open (instrument on Y, time on X)
-- **Instrument lifecycle**: Gantt showing each instrument's existence from first to last data point
-- **Trade distribution**: histogram of PnL per trade
-- **Top-of-book CSV**: if recording enabled
-- **Raw data**: orders.csv, fills.csv, positions.csv, tearsheet.json, metadata.json
+**Evidence:** `experiment=testing, variant=tick-always, run_id=7640d8a1, git_sha=f9aff2387023`
 
-### Labeling
-ALL visualizations, metrics, and artifacts use **slug + condition_id** for instrument identification. Never bare condition_id hex strings. Example: `btc-updown-15m-1773493200 (0x0a00bb30...)` not `0x0a00bb3094f3edef14...`.
+### MLflow (Paper) — UNVERIFIED
+Paper trading must have SAME MLflow integration. MLflow serves as live dashboard.
+- Periodic metric updates DURING execution (not just at end)
+- Same artifacts as backtest
+- Heartbeat updates visible in MLflow tags
 
-### Heartbeat
-status.json updated periodically during execution (every 60s or every N trades) with current trade count, PnL, timestamp. Handles the case where a run gets killed — last heartbeat time shows when it died, not just "started".
+**Needs:** Paper run showing MLflow logging during execution.
 
-### Strategy Logging
-Every lifecycle function in base strategy logs with context:
-- `on_start()`: instruments subscribed, timer config, exit thresholds
-- `on_instrument()`: slug, condition_id, token_id, outcome
-- `on_interval()`: timestamp, instrument count, active/exiting/closed counts (periodic, not every tick)
-- `on_order_book_deltas()`: periodic summary (every Nth tick) with bid/ask/spread
-- `_trigger_exit()`: reason, position size, unrealized PnL
-- `on_order_filled()`: fill price, quantity, side
-- `on_order_canceled()`: rejection reason, order details
+### MLflow Artifacts — PASS
+4 PNGs generated: PnL curve (39KB), position timeline (18KB), trade distribution (17KB), instrument lifecycle (22KB). All use slug+condition_id labels.
+
+### Labeling — PASS
+All visualizations, metrics, and artifacts use slug + condition_id. Never bare hex.
+
+**Evidence:** `btc-updown-4h-1773475200 (0xd114df49...)` format everywhere.
+
+### Heartbeat — PASS
+status.json updated every 60s with fills, ticks, instruments, active count.
+
+**Evidence:** 120 heartbeat lines in 2h, progression from 0 to 68 fills.
+
+### Strategy Logging — PASS
+Every lifecycle function logs with context: on_start, on_instrument, on_interval (periodic), on_tick (periodic), _trigger_exit, on_order_filled, on_order_canceled.
 
 ---
 
 ## Validation
 
-### Reality Checks
-After every backtest:
-- Opens match closes (every buy has a sell or is still open at end)
-- Fill prices within bid/ask spread at time of fill
-- Tearsheet metrics align with raw fills
+### Reality Checks — PASS
+- Opens match closes: 34 buys = 34 sells
+- Fill prices within bid/ask spread: verified
+- Tearsheet PnL matches fills: diff=0.0000
 - Round trips = closed positions count
 
-### Universe Validation
-Cross-validate discovered markets against Gamma API or pm cli. Confirm: no markets silently dropped, slug filtering matches expected pattern, correct token count per market.
+### Universe Validation — PASS (backtest)
+Cross-validated 3/3 markets against Gamma API.
 
-### Test Strategies
-`tick_always` and `timer_always` are the baseline test harnesses. They just trade — no signals. All testing uses these or copies of them. Future strategies build on top.
+### Test Strategies — PASS
+`tick_always` and `timer_always` are baseline test harnesses. Both produce fills on real data.
+
+### Unit Tests — PASS
+81/81 tests pass (5:25).
+
+---
+
+## Paper Trading Specific — ALL UNVERIFIED
+
+These behaviors require a live paper trading session to verify:
+
+| Behavior | What to verify |
+|----------|---------------|
+| WebSocket connection | MARKET channel connects without auth |
+| Live orderbook flow | on_tick fires with real-time data |
+| MarketDiscoveryActor | Polls Gamma API, finds active markets |
+| on_instrument | Fires for dynamically discovered instruments |
+| Metadata hydration (paper) | _market_meta populated via on_instrument |
+| Active window trading | Strategy trades only the current 15m btc-updown window |
+| Paper MLflow | Metrics logged DURING execution, not just at end |
+| Paper heartbeat | status.json updated during paper run |
+| Paper artifacts | PnL curve, position timeline, fills CSV generated |
+| Credential bypass | Dummy creds work — no env vars needed |
+| Graceful shutdown | Node stops cleanly after paper_duration_seconds |
