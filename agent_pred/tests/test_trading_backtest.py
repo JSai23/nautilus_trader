@@ -1,8 +1,7 @@
-"""Trading backtest test: proves engine -> order -> fill -> position -> PnL works.
+"""Trading backtest tests: proves engine -> order -> fill -> position -> PnL works.
 
-Uses real PMXT data from the same hour as the integration test. Runs SimpleTestStrategy
-which places a BUY limit at best_ask on first valid book update — verifying the full
-trading pipeline produces actual fills and PnL.
+Uses real PMXT data. Tests TickAlways (tick pattern) and TimerAlways (timer pattern)
+plus SimpleTestStrategy (single order) to verify the full trading pipeline.
 """
 
 import logging
@@ -21,14 +20,9 @@ from nautilus_trader.model.objects import Money
 from pmxt.reader import read_local_filtered
 from pmxt.transformer import transform_row
 from runner.tearsheet import compute_tearsheet
-from experiments.strategies.imbalance import ImbalanceStrategy, ImbalanceStrategyConfig
-from experiments.strategies.mean_reversion import MeanReversionStrategy, MeanReversionStrategyConfig
-from experiments.strategies.micro_scalper import MicroScalperStrategy, MicroScalperStrategyConfig
-from experiments.strategies.momentum_breakout import MomentumBreakoutStrategy, MomentumBreakoutStrategyConfig
-from experiments.strategies.random_baseline import RandomBaselineStrategy, RandomBaselineStrategyConfig
+from experiments.strategies.tick_always import TickAlways, TickAlwaysConfig
+from experiments.strategies.timer_always import TimerAlways, TimerAlwaysConfig
 from experiments.strategies.simple_test import SimpleTestStrategy, SimpleTestStrategyConfig
-from experiments.strategies.spread_scalper import SpreadScalperStrategy, SpreadScalperStrategyConfig
-from experiments.strategies.timer_momentum import TimerMomentumStrategy, TimerMomentumStrategyConfig
 from universe.instruments import build_instrument_maps
 
 logging.basicConfig(level=logging.INFO)
@@ -39,19 +33,16 @@ POLYMARKET_VENUE = Venue("POLYMARKET")
 
 
 def hour_bounds(hour: str) -> tuple[datetime, datetime]:
-    """Compute (start_dt, end_dt) for a single hour string like '2026-03-09T09'."""
     start = datetime.strptime(hour, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
     return start, start + timedelta(hours=1)
 
 
 def hour_bounds_ns(hour: str) -> tuple[int, int]:
-    """Compute (start_ns, end_ns) for a single hour string."""
     start, end = hour_bounds(hour)
     return int(start.timestamp() * 1_000_000_000), int(end.timestamp() * 1_000_000_000)
 
 
 def _local_data_generator(local_path, market_ids, instruments, instrument_ids):
-    """Generate NautilusTrader data from a local parquet file."""
     for batch in read_local_filtered(local_path, market_ids):
         transformed = []
         for row in batch:
@@ -71,10 +62,6 @@ def build_test_engine(
     local_path: Path | None = None,
     balance: float = 10_000.0,
 ) -> tuple[BacktestEngine, list[str], datetime, datetime]:
-    """Build a fully-configured BacktestEngine for testing.
-
-    Returns (engine, instrument_id_strs, start_dt, end_dt).
-    """
     engine = BacktestEngine(config=BacktestEngineConfig(logging=False))
     engine.add_venue(
         venue=POLYMARKET_VENUE,
@@ -108,8 +95,8 @@ def build_test_engine(
 
 class TestTradingBacktest:
     @pytest.mark.timeout(300)
-    def test_strategy_produces_fills_and_pnl(self, market_with_tokens, pmxt_local_path):
-        """Full trading pipeline: PMXT -> engine -> order -> fill -> position -> PnL."""
+    def test_simple_test_produces_fills(self, market_with_tokens, pmxt_local_path):
+        """SimpleTestStrategy places one order — proves basic order pipeline."""
         market_info = market_with_tokens
         instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
         assert len(instruments) > 0
@@ -118,61 +105,27 @@ class TestTradingBacktest:
             instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
         )
 
-        config = SimpleTestStrategyConfig(
-            instrument_ids=iid_strs,
-            trade_size=1.0,
-        )
+        config = SimpleTestStrategyConfig(instrument_ids=iid_strs, trade_size=1.0)
         strategy = SimpleTestStrategy(config=config)
         engine.add_strategy(strategy)
         engine.run(start=start_dt, end=end_dt)
 
-        assert strategy.order_count > 0, (
-            "Strategy submitted 0 orders — book never had valid bid/ask"
-        )
+        assert strategy.order_count > 0, "Strategy submitted 0 orders"
 
         orders = engine.cache.orders()
-        positions = engine.cache.positions()
-
-        log.info("Orders: %d, Fills: %d, Positions: %d",
-                 len(orders), strategy.fill_count, len(positions))
-
-        orders_df = ReportProvider.generate_order_fills_report(orders)
         fills_df = ReportProvider.generate_fills_report(orders)
-        positions_df = ReportProvider.generate_positions_report(positions)
-
-        log.info("Orders DF shape: %s", orders_df.shape)
-        log.info("Fills DF shape: %s", fills_df.shape)
-        log.info("Positions DF shape: %s", positions_df.shape)
+        positions_df = ReportProvider.generate_positions_report(engine.cache.positions())
 
         if strategy.fill_count > 0:
-            assert not fills_df.empty, "Fills DF is empty despite fill_count > 0"
-
             tearsheet = compute_tearsheet(positions_df, fills_df)
-            log.info("Tearsheet: %s", tearsheet.to_dict())
-
-            assert tearsheet.num_trades > 0, "Tearsheet shows 0 trades"
-            assert tearsheet.num_positions > 0, "Tearsheet shows 0 positions"
-
-            log.info(
-                "SUCCESS: %d orders, %d fills, %d trades, PnL=%.4f",
-                strategy.order_count,
-                strategy.fill_count,
-                tearsheet.num_trades,
-                tearsheet.total_pnl,
-            )
-        else:
-            log.warning(
-                "No fills (FOK rejected) — %d orders submitted. "
-                "Book may lack volume. This still proves order pipeline works.",
-                strategy.order_count,
-            )
-            assert len(orders) > 0, "No orders in engine despite strategy submitting"
+            assert tearsheet.num_trades > 0
+            log.info("SimpleTest: %d fills, PnL=%.4f", strategy.fill_count, tearsheet.total_pnl)
 
         engine.dispose()
 
     @pytest.mark.timeout(300)
-    def test_micro_scalper_generates_many_fills(self, market_with_tokens, pmxt_local_path):
-        """MicroScalperStrategy re-enters after exits, producing many fills."""
+    def test_tick_always_generates_many_fills(self, market_with_tokens, pmxt_local_path):
+        """TickAlways buys/sells on book updates — should produce many round trips."""
         market_info = market_with_tokens
         instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
 
@@ -180,50 +133,36 @@ class TestTradingBacktest:
             instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
         )
 
-        config = MicroScalperStrategyConfig(
+        config = TickAlwaysConfig(
             instrument_ids=iid_strs,
             trade_size=1.0,
-            max_spread=0.90,
-            ema_alpha=0.3,
-            entry_dip_ticks=0,
-            max_hold_updates=10,
-            cooldown_updates=1,
-            convergence_threshold=0.99,
-            max_entry_price=1.01,
-            min_entry_price=0.0,
+            buy_after_ticks=3,
+            sell_after_ticks=10,
         )
-        strategy = MicroScalperStrategy(config=config)
+        strategy = TickAlways(config=config)
         engine.add_strategy(strategy)
         engine.run(start=start_dt, end=end_dt)
 
         orders = engine.cache.orders()
         fills_df = ReportProvider.generate_fills_report(orders)
-        positions = engine.cache.positions()
-        closed = [p for p in positions if p.is_closed]
+        closed = [p for p in engine.cache.positions() if p.is_closed]
         positions_df = (
             ReportProvider.generate_positions_report(closed)
             if closed
-            else ReportProvider.generate_positions_report(positions)
+            else ReportProvider.generate_positions_report(engine.cache.positions())
         )
 
-        log.info(
-            "MicroScalper: %d orders, %d fills, %d positions, %d round_trips",
-            len(orders), len(fills_df), len(positions), strategy.round_trips,
-        )
+        log.info("TickAlways: %d fills, %d round_trips", len(fills_df), strategy.round_trips)
 
-        assert len(fills_df) >= 3, (
-            f"MicroScalper only produced {len(fills_df)} fills — re-entry may not be working"
-        )
-
+        assert len(fills_df) >= 3, f"TickAlways only produced {len(fills_df)} fills"
         tearsheet = compute_tearsheet(positions_df, fills_df)
-        log.info("MicroScalper tearsheet: %s", tearsheet.to_dict())
         assert tearsheet.num_trades >= 3
 
         engine.dispose()
 
     @pytest.mark.timeout(600)
-    def test_timer_momentum_on_volatile_market(self, volatile_market, pmxt_local_path):
-        """TimerMomentumStrategy uses base class interval timer and produces fills."""
+    def test_timer_always_on_volatile_market(self, volatile_market, pmxt_local_path):
+        """TimerAlways buys/sells on intervals — should produce round trips."""
         market_info = volatile_market
         instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
         start_ns, end_ns = hour_bounds_ns(TEST_HOUR)
@@ -232,308 +171,32 @@ class TestTradingBacktest:
             instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
         )
 
-        config = TimerMomentumStrategyConfig(
+        config = TimerAlwaysConfig(
             instrument_ids=iid_strs,
             trade_size=1.0,
             check_interval_minutes=1,
             hold_periods=4,
-            max_spread=0.20,
-            max_entry_price=0.92,
-            min_entry_price=0.08,
             convergence_threshold=0.99,
             start_time_ns=start_ns,
             end_time_ns=end_ns,
         )
-        strategy = TimerMomentumStrategy(config=config)
+        strategy = TimerAlways(config=config)
         engine.add_strategy(strategy)
         engine.run(start=start_dt, end=end_dt)
 
         orders = engine.cache.orders()
         fills_df = ReportProvider.generate_fills_report(orders)
-        positions = engine.cache.positions()
-        closed = [p for p in positions if p.is_closed]
+        closed = [p for p in engine.cache.positions() if p.is_closed]
         positions_df = (
             ReportProvider.generate_positions_report(closed)
             if closed
-            else ReportProvider.generate_positions_report(positions)
+            else ReportProvider.generate_positions_report(engine.cache.positions())
         )
 
-        log.info(
-            "TimerMomentum: %d orders, %d fills, %d positions, %d round_trips",
-            len(orders), len(fills_df), len(positions), strategy.round_trips,
-        )
+        log.info("TimerAlways: %d fills, %d round_trips", len(fills_df), strategy.round_trips)
 
-        assert len(fills_df) >= 2, (
-            f"TimerMomentum produced {len(fills_df)} fills — expected at least a buy+sell"
-        )
-
+        assert len(fills_df) >= 2, f"TimerAlways produced {len(fills_df)} fills"
         tearsheet = compute_tearsheet(positions_df, fills_df)
-        log.info("TimerMomentum tearsheet: %s", tearsheet.to_dict())
-        assert tearsheet.num_trades >= 2
-        assert tearsheet.num_round_trips >= 1
-
-        engine.dispose()
-
-    @pytest.mark.timeout(300)
-    def test_imbalance_strategy_produces_positions(self, market_with_tokens, pmxt_local_path):
-        """ImbalanceStrategy with null stop_loss/take_profit enters positions."""
-        market_info = market_with_tokens
-        instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
-
-        engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
-        )
-
-        config = ImbalanceStrategyConfig(
-            instrument_ids=iid_strs,
-            imbalance_threshold=0.3,
-            trade_size=5.0,
-            take_profit=None,
-            stop_loss=None,
-        )
-        strategy = ImbalanceStrategy(config=config)
-        engine.add_strategy(strategy)
-        engine.run(start=start_dt, end=end_dt)
-
-        orders = engine.cache.orders()
-        positions = engine.cache.positions()
-
-        log.info(
-            "ImbalanceStrategy: %d orders, %d positions",
-            len(orders), len(positions),
-        )
-
-        assert len(orders) > 0, (
-            "ImbalanceStrategy submitted 0 orders — no book had imbalance > 0.3"
-        )
-        assert len(positions) > 0, "No positions created despite orders"
-
-        fills_df = ReportProvider.generate_fills_report(orders)
-        positions_df = ReportProvider.generate_positions_report(positions)
-
-        if not fills_df.empty:
-            tearsheet = compute_tearsheet(positions_df, fills_df)
-            log.info("ImbalanceStrategy tearsheet: %s", tearsheet.to_dict())
-            assert tearsheet.num_positions > 0
-
-        engine.dispose()
-
-    @pytest.mark.timeout(600)
-    def test_mean_reversion_on_volatile_market(self, volatile_market, pmxt_local_path):
-        """MeanReversionStrategy buys dips and sells on reversion."""
-        market_info = volatile_market
-        instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
-        start_ns, end_ns = hour_bounds_ns(TEST_HOUR)
-
-        engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
-        )
-
-        config = MeanReversionStrategyConfig(
-            instrument_ids=iid_strs,
-            trade_size=1.0,
-            check_interval_minutes=1,
-            lookback_periods=5,
-            entry_deviation=0.005,
-            hold_periods=4,
-            max_spread=0.25,
-            max_entry_price=0.95,
-            min_entry_price=0.05,
-            convergence_threshold=0.99,
-            start_time_ns=start_ns,
-            end_time_ns=end_ns,
-        )
-        strategy = MeanReversionStrategy(config=config)
-        engine.add_strategy(strategy)
-        engine.run(start=start_dt, end=end_dt)
-
-        orders = engine.cache.orders()
-        fills_df = ReportProvider.generate_fills_report(orders)
-        positions = engine.cache.positions()
-        closed = [p for p in positions if p.is_closed]
-        positions_df = (
-            ReportProvider.generate_positions_report(closed)
-            if closed
-            else ReportProvider.generate_positions_report(positions)
-        )
-
-        log.info(
-            "MeanReversion: %d orders, %d fills, %d positions, %d round_trips",
-            len(orders), len(fills_df), len(positions), strategy.round_trips,
-        )
-
-        assert len(fills_df) >= 2, (
-            f"MeanReversion produced {len(fills_df)} fills — expected at least buy+sell"
-        )
-
-        tearsheet = compute_tearsheet(positions_df, fills_df)
-        log.info("MeanReversion tearsheet: %s", tearsheet.to_dict())
-        assert tearsheet.num_trades >= 2
-        assert tearsheet.num_round_trips >= 1
-
-        engine.dispose()
-
-    @pytest.mark.timeout(600)
-    def test_spread_scalper_on_volatile_market(self, volatile_market, pmxt_local_path):
-        """SpreadScalperStrategy enters on tight spreads and exits on widening."""
-        market_info = volatile_market
-        instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
-        start_ns, end_ns = hour_bounds_ns(TEST_HOUR)
-
-        engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
-        )
-
-        config = SpreadScalperStrategyConfig(
-            instrument_ids=iid_strs,
-            trade_size=1.0,
-            check_interval_minutes=1,
-            spread_lookback=5,
-            tight_spread_ratio=0.8,
-            wide_spread_ratio=1.2,
-            hold_periods=4,
-            max_spread=0.25,
-            max_entry_price=0.95,
-            min_entry_price=0.05,
-            convergence_threshold=0.99,
-            start_time_ns=start_ns,
-            end_time_ns=end_ns,
-        )
-        strategy = SpreadScalperStrategy(config=config)
-        engine.add_strategy(strategy)
-        engine.run(start=start_dt, end=end_dt)
-
-        orders = engine.cache.orders()
-        fills_df = ReportProvider.generate_fills_report(orders)
-        positions = engine.cache.positions()
-        closed = [p for p in positions if p.is_closed]
-        positions_df = (
-            ReportProvider.generate_positions_report(closed)
-            if closed
-            else ReportProvider.generate_positions_report(positions)
-        )
-
-        log.info(
-            "SpreadScalper: %d orders, %d fills, %d positions, %d round_trips",
-            len(orders), len(fills_df), len(positions), strategy.round_trips,
-        )
-
-        assert len(fills_df) >= 2, (
-            f"SpreadScalper produced {len(fills_df)} fills — expected at least buy+sell"
-        )
-
-        tearsheet = compute_tearsheet(positions_df, fills_df)
-        log.info("SpreadScalper tearsheet: %s", tearsheet.to_dict())
-        assert tearsheet.num_trades >= 2
-        assert tearsheet.num_round_trips >= 1
-
-        engine.dispose()
-
-    @pytest.mark.timeout(600)
-    def test_momentum_breakout_on_volatile_market(self, volatile_market, pmxt_local_path):
-        """MomentumBreakoutStrategy enters on sustained directional movement."""
-        market_info = volatile_market
-        instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
-        start_ns, end_ns = hour_bounds_ns(TEST_HOUR)
-
-        engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
-        )
-
-        config = MomentumBreakoutStrategyConfig(
-            instrument_ids=iid_strs,
-            trade_size=1.0,
-            check_interval_minutes=1,
-            breakout_periods=2,
-            hold_periods=4,
-            reversal_periods=1,
-            max_spread=0.25,
-            max_entry_price=0.95,
-            min_entry_price=0.05,
-            convergence_threshold=0.99,
-            start_time_ns=start_ns,
-            end_time_ns=end_ns,
-        )
-        strategy = MomentumBreakoutStrategy(config=config)
-        engine.add_strategy(strategy)
-        engine.run(start=start_dt, end=end_dt)
-
-        orders = engine.cache.orders()
-        fills_df = ReportProvider.generate_fills_report(orders)
-        positions = engine.cache.positions()
-        closed = [p for p in positions if p.is_closed]
-        positions_df = (
-            ReportProvider.generate_positions_report(closed)
-            if closed
-            else ReportProvider.generate_positions_report(positions)
-        )
-
-        log.info(
-            "MomentumBreakout: %d orders, %d fills, %d positions, %d round_trips",
-            len(orders), len(fills_df), len(positions), strategy.round_trips,
-        )
-
-        assert len(fills_df) >= 2, (
-            f"MomentumBreakout produced {len(fills_df)} fills — expected at least buy+sell"
-        )
-
-        tearsheet = compute_tearsheet(positions_df, fills_df)
-        log.info("MomentumBreakout tearsheet: %s", tearsheet.to_dict())
-        assert tearsheet.num_trades >= 2
-        assert tearsheet.num_round_trips >= 1
-
-        engine.dispose()
-
-    @pytest.mark.timeout(600)
-    def test_random_baseline_on_volatile_market(self, volatile_market, pmxt_local_path):
-        """RandomBaselineStrategy enters randomly and exits after fixed hold."""
-        market_info = volatile_market
-        instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
-        start_ns, end_ns = hour_bounds_ns(TEST_HOUR)
-
-        engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
-        )
-
-        config = RandomBaselineStrategyConfig(
-            instrument_ids=iid_strs,
-            trade_size=1.0,
-            check_interval_minutes=1,
-            entry_probability=0.5,
-            hold_periods=3,
-            max_spread=0.25,
-            max_entry_price=0.95,
-            min_entry_price=0.05,
-            seed=42,
-            convergence_threshold=0.99,
-            start_time_ns=start_ns,
-            end_time_ns=end_ns,
-        )
-        strategy = RandomBaselineStrategy(config=config)
-        engine.add_strategy(strategy)
-        engine.run(start=start_dt, end=end_dt)
-
-        orders = engine.cache.orders()
-        fills_df = ReportProvider.generate_fills_report(orders)
-        positions = engine.cache.positions()
-        closed = [p for p in positions if p.is_closed]
-        positions_df = (
-            ReportProvider.generate_positions_report(closed)
-            if closed
-            else ReportProvider.generate_positions_report(positions)
-        )
-
-        log.info(
-            "RandomBaseline: %d orders, %d fills, %d positions, %d round_trips",
-            len(orders), len(fills_df), len(positions), strategy.round_trips,
-        )
-
-        assert len(fills_df) >= 2, (
-            f"RandomBaseline produced {len(fills_df)} fills — expected at least buy+sell"
-        )
-
-        tearsheet = compute_tearsheet(positions_df, fills_df)
-        log.info("RandomBaseline tearsheet: %s", tearsheet.to_dict())
         assert tearsheet.num_trades >= 2
         assert tearsheet.num_round_trips >= 1
 

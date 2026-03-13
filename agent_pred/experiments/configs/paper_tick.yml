@@ -1,0 +1,17 @@
+mode: "paper"
+
+strategy:
+  path: "experiments.strategies.tick_always:TickAlways"
+  params:
+    instrument_ids: []
+    trade_size: 5.0
+    buy_after_ticks: 3
+    sell_after_ticks: 10
+
+universe:
+  slug_contains: "btc-updown-15m"
+  active: true
+  max_markets: 3
+
+starting_balance: 10000.0
+paper_duration_seconds: 900
