@@ -1,14 +1,12 @@
-"""Build NautilusTrader BinaryOption instruments from cached market metadata.
+"""Build NautilusTrader BinaryOption instruments from market metadata.
 
-Per IMPL_PLAN Section 4.3, backtest instruments are constructed from cached
-JSON metadata (from Gamma API / CLI). This module handles that construction.
+Constructs BinaryOption instruments from metadata dicts (from Gamma API
+or CLOB API). No file I/O — takes in-memory dicts.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
 from typing import Any
 
 from nautilus_trader.adapters.polymarket.common.parsing import parse_polymarket_instrument
@@ -16,11 +14,6 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments import BinaryOption
 
 log = logging.getLogger(__name__)
-
-
-def load_market_metadata(path: Path) -> dict[str, Any]:
-    with open(path) as f:
-        return json.load(f)
 
 
 def build_instruments_from_metadata(

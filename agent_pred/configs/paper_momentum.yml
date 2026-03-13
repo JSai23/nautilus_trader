@@ -1,0 +1,45 @@
+# Paper trading — live data, simulated execution
+#
+# Uses the same TimerMomentum strategy as backtesting but connects to
+# Polymarket's live WebSocket feed. Orders are filled by a local sandbox
+# matching engine (no real money at risk).
+#
+# Prerequisites:
+#   - POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_PASSPHRASE env vars
+#   - POLYMARKET_PK env var (wallet private key — needed for data client auth)
+#
+# Run:
+#   uv run python scripts/run_backtest.py configs/paper_momentum.yml
+
+mode: "paper"
+
+strategy:
+  path: "strategy.timer_momentum:TimerMomentumStrategy"
+  params:
+    instrument_ids: []
+    trade_size: 5.0
+    check_interval_minutes: 1
+    hold_periods: 8
+    max_spread: 0.20
+    max_entry_price: 0.92
+    min_entry_price: 0.08
+    convergence_threshold: 0.99
+    take_profit: null
+    stop_loss: null
+
+# Discover active markets via Gamma API
+# MarketDiscoveryActor polls every discovery.poll_minutes for new markets
+universe:
+  active: true
+  volume_min: 50000
+  end_date_min: "2026-04-01"
+  max_markets: 20
+
+# Dynamic market discovery settings
+discovery:
+  poll_minutes: 5  # Poll Gamma API every 5 minutes for new markets
+
+paper:
+  duration_seconds: 3600  # 1 hour
+
+starting_balance: 10000.0

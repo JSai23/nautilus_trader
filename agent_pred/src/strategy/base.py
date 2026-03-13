@@ -5,6 +5,12 @@ Per IMPL_PLAN Block 4:
 - Resolution timer from instrument.expiration_ns
 - Price convergence detection
 - Configurable take-profit / stop-loss
+
+Dynamic instrument support:
+- When dynamic_instruments=True (paper/live mode), subscribes to
+  instrument updates from MarketDiscoveryActor
+- on_instrument() subscribes to orderbook data for newly discovered markets
+- on_new_instrument() hook for subclass-specific handling
 """
 
 from __future__ import annotations
@@ -17,10 +23,14 @@ from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import OrderBookDelta, OrderBookDeltas
 from nautilus_trader.model.enums import OrderSide, TimeInForce
-from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import InstrumentId, Venue
+from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.trading.strategy import Strategy
 
 INTERVAL_TIMER_NAME = "polymarket_interval"
+
+
+POLYMARKET_VENUE = Venue("POLYMARKET")
 
 
 class PolymarketStrategyConfig(StrategyConfig, frozen=True):
@@ -32,6 +42,7 @@ class PolymarketStrategyConfig(StrategyConfig, frozen=True):
     stop_loss: float | None = None
     start_time_ns: int = 0  # Start of data window (ns epoch). Safety bound for timers.
     end_time_ns: int = 0  # End of data window (ns epoch). Triggers exit 60s before.
+    dynamic_instruments: bool = False  # Enable for paper/live: subscribe to new instruments
 
 
 class PolymarketStrategy(Strategy):
@@ -55,23 +66,21 @@ class PolymarketStrategy(Strategy):
 
         self._start_time_ns = config.start_time_ns
         self._end_time_ns = config.end_time_ns
+        self._dynamic_instruments = config.dynamic_instruments
 
         self._data_ended = False  # Set when end-of-data exit fires; blocks new entries
         self._exiting: set[InstrumentId] = set()
         self._closed: set[InstrumentId] = set()
+        self._subscribed_ids: set[InstrumentId] = set()  # Track all subscribed instruments
 
     def on_start(self) -> None:
+        # Subscribe to instrument updates so on_instrument() fires
+        # for dynamically discovered markets
+        if self._dynamic_instruments:
+            self.subscribe_instruments(POLYMARKET_VENUE)
+
         for instrument_id in self._instrument_ids:
-            self.subscribe_order_book_deltas(instrument_id)
-            instrument = self.cache.instrument(instrument_id)
-            if instrument and hasattr(instrument, "expiration_ns") and instrument.expiration_ns > 0:
-                lead_ns = self._exit_before_resolution_secs * 1_000_000_000
-                alert_ns = instrument.expiration_ns - lead_ns
-                if alert_ns > 0:
-                    self.clock.set_time_alert_ns(
-                        name=f"resolution_{instrument_id}",
-                        alert_time_ns=alert_ns,
-                    )
+            self._subscribe_instrument(instrument_id)
 
         # End-of-data exit: close all positions 60s before data window ends.
         # Prevents positions from reaching resolution timer with stale book prices.
@@ -109,6 +118,45 @@ class PolymarketStrategy(Strategy):
                     self._end_time_ns, unit="ns", tz="UTC"
                 )
             self.clock.set_timer(**timer_kwargs)
+
+    def _subscribe_instrument(self, instrument_id: InstrumentId) -> None:
+        """Subscribe to orderbook data and set up exit timers for an instrument."""
+        if instrument_id in self._subscribed_ids:
+            return
+        self._subscribed_ids.add(instrument_id)
+
+        self.subscribe_order_book_deltas(instrument_id)
+        instrument = self.cache.instrument(instrument_id)
+        if instrument and hasattr(instrument, "expiration_ns") and instrument.expiration_ns > 0:
+            lead_ns = self._exit_before_resolution_secs * 1_000_000_000
+            alert_ns = instrument.expiration_ns - lead_ns
+            if alert_ns > self.clock.timestamp_ns():
+                self.clock.set_time_alert_ns(
+                    name=f"resolution_{instrument_id}",
+                    alert_time_ns=alert_ns,
+                )
+
+    def on_instrument(self, instrument: Instrument) -> None:
+        """Handle new instrument from MarketDiscoveryActor.
+
+        When dynamic_instruments is enabled, automatically subscribes to
+        orderbook data for newly discovered instruments and calls
+        on_new_instrument() for subclass-specific handling.
+        """
+        if not self._dynamic_instruments:
+            return
+        if instrument.id in self._subscribed_ids:
+            return
+        if instrument.id.venue != POLYMARKET_VENUE:
+            return
+
+        self.log.info(f"Dynamic instrument discovered: {instrument.id}")
+        self._instrument_ids.append(instrument.id)
+        self._subscribe_instrument(instrument.id)
+        self.on_new_instrument(instrument)
+
+    def on_new_instrument(self, instrument: Instrument) -> None:
+        """Called when a new instrument is dynamically discovered. Override in subclasses."""
 
     def _on_interval_event(self, event: TimeEvent) -> None:
         """Dispatch interval timer events to subclass on_interval()."""

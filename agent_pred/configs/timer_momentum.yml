@@ -5,7 +5,7 @@
 # where prices actually move enough for wins AND losses.
 #
 # Run:
-#   uv run python scripts/run_backtest.py configs/timer_momentum.yml --discover
+#   uv run python scripts/run_backtest.py configs/timer_momentum.yml
 
 mode: "backtest"
 

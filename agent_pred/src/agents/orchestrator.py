@@ -19,7 +19,7 @@ import yaml
 
 from runner.engine import ExperimentConfig, RunResult, run_backtest
 from runner.tearsheet import Tearsheet
-from universe.instruments import load_market_metadata
+from universe.gamma import MarketFilter, discover_markets
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class OrchestratorConfig:
     max_iterations: int = 5
     num_experiments_per_iteration: int = 3
     data_hours: list[str] = field(default_factory=lambda: ["2026-03-09T09"])
-    metadata_dir: Path = field(default_factory=lambda: Path("data/markets"))
+    universe_filter: MarketFilter = field(default_factory=lambda: MarketFilter(active=True, max_markets=50))
     results_base_dir: Path = field(default_factory=lambda: Path("results"))
     mlflow_tracking_uri: str | None = None
     model: str = "claude-sonnet-4-20250514"
@@ -154,14 +154,12 @@ class Orchestrator:
         self._memory: list[str] = []
 
     def _load_all_markets(self) -> list[dict[str, Any]]:
-        """Load all cached market metadata."""
-        markets = []
-        for f in sorted(self._config.metadata_dir.glob("*.json")):
-            markets.append(load_market_metadata(f))
+        """Discover markets via Gamma API using configured filters."""
+        markets = discover_markets(self._config.universe_filter)
         if not markets:
-            raise FileNotFoundError(
-                f"No market metadata in {self._config.metadata_dir}. "
-                "Run: uv run python scripts/run_backtest.py configs/example_backtest.yml --discover"
+            raise RuntimeError(
+                "No markets found via Gamma API with current filters. "
+                "Check universe_filter settings or try broader criteria."
             )
         return markets
 

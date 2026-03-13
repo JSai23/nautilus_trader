@@ -29,6 +29,7 @@ from pmxt.generator import pmxt_data_generator
 from pmxt.index import PMXTIndex
 from runner.mlflow_logger import MLflowLogger
 from runner.tearsheet import Tearsheet, compute_tearsheet
+from runner.utils import import_strategy_class
 from universe.instruments import build_instrument_maps
 
 log = logging.getLogger(__name__)
@@ -37,15 +38,30 @@ POLYMARKET_VENUE = Venue("POLYMARKET")
 
 
 @dataclass
-class DiscoveryConfig:
-    """Filter criteria for Gamma API market discovery."""
+class UniverseConfig:
+    """Filter criteria for Gamma API market discovery.
 
+    Maps directly to MarketFilter fields. Server-side filters are pushed
+    to the Gamma API; client-side filters (slug_contains, categories)
+    are applied after fetching.
+    """
+
+    # Server-side filters
     active: bool | None = True
     closed: bool | None = False
-    min_volume: float = 0.0
-    max_markets: int = 50
-    categories: list[str] = field(default_factory=list)
+    end_date_min: str | None = None  # ISO date, e.g. "2026-04-01"
+    end_date_max: str | None = None
+    start_date_min: str | None = None
+    volume_min: float = 0.0
+    order_by: str | None = None  # camelCase field name, e.g. "volumeNum"
+    ascending: bool | None = None
+
+    # Client-side filters
     slug_contains: str | None = None
+    categories: list[str] = field(default_factory=list)
+
+    # Pagination cap
+    max_markets: int = 50
 
 
 @dataclass
@@ -61,9 +77,9 @@ class ExperimentConfig:
     mlflow_variant: str = ""
     mlflow_tags: dict[str, str] = field(default_factory=dict)
     starting_balance: float = 10_000.0
-    max_markets: int = 50  # Cap on discovered markets (0 = no cap)
     paper_duration_seconds: int = 3600
-    discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
+    discovery_poll_minutes: int = 5  # How often to poll for new markets (paper/live)
+    universe: UniverseConfig = field(default_factory=UniverseConfig)
 
     @classmethod
     def from_yaml(cls, path: Path) -> ExperimentConfig:
@@ -73,15 +89,20 @@ class ExperimentConfig:
         strategy = raw.get("strategy", {})
         data = raw.get("data", {})
         mlflow = raw.get("mlflow", {})
-        disc_raw = raw.get("discovery", {})
+        uni_raw = raw.get("universe", {})
 
-        discovery = DiscoveryConfig(
-            active=disc_raw.get("active", True),
-            closed=disc_raw.get("closed", False),
-            min_volume=disc_raw.get("min_volume", 0.0),
-            max_markets=disc_raw.get("max_markets", raw.get("max_markets", 50)),
-            categories=disc_raw.get("categories", []),
-            slug_contains=disc_raw.get("slug_contains"),
+        universe = UniverseConfig(
+            active=uni_raw.get("active", True),
+            closed=uni_raw.get("closed", False),
+            end_date_min=uni_raw.get("end_date_min"),
+            end_date_max=uni_raw.get("end_date_max"),
+            start_date_min=uni_raw.get("start_date_min"),
+            volume_min=uni_raw.get("volume_min", 0.0),
+            order_by=uni_raw.get("order_by"),
+            ascending=uni_raw.get("ascending"),
+            slug_contains=uni_raw.get("slug_contains"),
+            categories=uni_raw.get("categories", []),
+            max_markets=uni_raw.get("max_markets", raw.get("max_markets", 50)),
         )
 
         return cls(
@@ -96,9 +117,9 @@ class ExperimentConfig:
             mlflow_variant=mlflow.get("parent_run", ""),
             mlflow_tags=mlflow.get("tags", {}),
             starting_balance=raw.get("starting_balance", 10_000.0),
-            max_markets=raw.get("max_markets", 50),
             paper_duration_seconds=raw.get("paper", {}).get("duration_seconds", 3600),
-            discovery=discovery,
+            discovery_poll_minutes=raw.get("discovery", {}).get("poll_minutes", 5),
+            universe=universe,
         )
 
 
@@ -116,17 +137,10 @@ class RunResult:
     error: str | None = None
 
 
-def _import_strategy_class(strategy_path: str):
-    """Import a strategy class from a dotted path like 'module.submod:ClassName'."""
-    module_path, class_name = strategy_path.rsplit(":", 1)
-    module = importlib.import_module(module_path)
-    return getattr(module, class_name)
-
 
 def run_backtest(
     config: ExperimentConfig,
     market_infos: list[dict[str, Any]],
-    metadata_cache_dir: Path | None = None,
     data_cache_dir: Path | None = None,
     results_dir: Path | None = None,
     mlflow_tracking_uri: str | None = None,
@@ -138,9 +152,7 @@ def run_backtest(
     config : ExperimentConfig
         Parsed experiment configuration.
     market_infos : list[dict]
-        Market metadata dicts (from Gamma API / CLI cache).
-    metadata_cache_dir : Path | None
-        Directory for market metadata cache.
+        Market metadata dicts (from Gamma API or CLOB API).
     data_cache_dir : Path | None
         Directory for PMXT data cache.
     results_dir : Path | None
@@ -231,7 +243,7 @@ def run_backtest(
         config.strategy_params["end_time_ns"] = int(end_dt.timestamp() * 1_000_000_000)
 
         # Import strategy and its config class (convention: StrategyConfig in same module)
-        strategy_cls = _import_strategy_class(config.strategy_path)
+        strategy_cls = import_strategy_class(config.strategy_path)
         config_module_path = config.strategy_path.rsplit(":", 1)[0]
         config_class_name = strategy_cls.__name__ + "Config"
         config_cls = getattr(importlib.import_module(config_module_path), config_class_name)

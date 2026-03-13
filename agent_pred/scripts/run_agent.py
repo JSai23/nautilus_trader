@@ -13,8 +13,7 @@ Usage:
 
 Prerequisites:
     1. Set ANTHROPIC_API_KEY environment variable
-    2. Run market discovery first:
-       uv run python scripts/run_backtest.py configs/example_backtest.yml --discover
+    2. Markets are discovered automatically via Gamma API at startup
 """
 
 import argparse
@@ -37,9 +36,9 @@ def main():
     parser.add_argument("--experiments", type=int, default=3, help="Experiments per iteration")
     parser.add_argument("--model", type=str, default="claude-sonnet-4-20250514", help="LLM model")
     parser.add_argument("--hours", nargs="+", default=["2026-03-09T09"], help="Data hours")
-    parser.add_argument("--metadata-dir", type=Path, default=Path("data/markets"))
     parser.add_argument("--results-dir", type=Path, default=Path("results/agent"))
     parser.add_argument("--mlflow-uri", type=str, default="sqlite:///mlflow.db")
+    parser.add_argument("--max-markets", type=int, default=50, help="Max markets to discover")
     args = parser.parse_args()
 
     # Check API key
@@ -59,16 +58,7 @@ def main():
         sys.exit(1)
 
     from agents.orchestrator import Orchestrator, OrchestratorConfig
-
-    # Check market metadata exists
-    if not args.metadata_dir.exists() or not list(args.metadata_dir.glob("*.json")):
-        log.error(
-            "No market metadata found in %s. "
-            "Run discovery first:\n"
-            "  uv run python scripts/run_backtest.py configs/example_backtest.yml --discover",
-            args.metadata_dir,
-        )
-        sys.exit(1)
+    from universe.gamma import MarketFilter
 
     # Build orchestrator
     client = anthropic.Anthropic(api_key=api_key)
@@ -76,7 +66,7 @@ def main():
         max_iterations=args.iterations,
         num_experiments_per_iteration=args.experiments,
         data_hours=args.hours,
-        metadata_dir=args.metadata_dir,
+        universe_filter=MarketFilter(active=True, max_markets=args.max_markets),
         results_base_dir=args.results_dir,
         mlflow_tracking_uri=args.mlflow_uri,
         model=args.model,

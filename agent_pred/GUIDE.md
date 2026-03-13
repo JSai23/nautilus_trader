@@ -13,7 +13,7 @@ nautilus_trader/                  # NautilusTrader repo (upstream fork)
 │   ├── data/                     # Local data cache (gitignored)
 │   │   ├── pmxt/cache/           # Filtered PMXT parquet subsets
 │   │   ├── pmxt/index.json       # What's cached
-│   │   └── markets/              # Market metadata JSON files
+│   │   └── (markets discovered live via Gamma API)
 │   ├── results/                  # Run outputs (gitignored)
 │   │   └── {run_id}/            # tearsheet.json, orders.csv, fills.csv, etc.
 │   ├── PLAN.md                   # System decomposition (context)
@@ -56,8 +56,8 @@ uv run pytest tests/ -m "not network"   # skip network tests
 ```bash
 cd agent_pred
 
-# Auto-discover markets from a PMXT hour and run:
-uv run python scripts/run_backtest.py configs/example_backtest.yml --discover
+# Run a backtest (markets discovered via Gamma API or config condition_ids):
+uv run python scripts/run_backtest.py configs/example_backtest.yml
 
 # Output goes to results/{run_id}/
 # - tearsheet.json    (PnL, Sharpe, drawdown, win rate)
@@ -72,8 +72,8 @@ uv run python scripts/run_backtest.py configs/example_backtest.yml --discover
 ```bash
 cd agent_pred
 
-# Discover what markets exist in an hour:
-uv run python scripts/download_data.py --discover-hour 2026-03-09T09
+# Discover markets via Gamma API:
+uv run python scripts/download_data.py --discover-markets --active --limit 50
 
 # Cache specific markets:
 uv run python scripts/download_data.py \
@@ -169,7 +169,7 @@ mlflow:
 
 ```bash
 cd agent_pred
-uv run python scripts/run_backtest.py configs/my_config.yml --discover
+uv run python scripts/run_backtest.py configs/my_config.yml
 ```
 
 ---
@@ -268,7 +268,7 @@ BacktestEngine.add_data_iterator()
 | `src/pmxt/reader.py` | Stream + filter PMXT parquet via HTTP |
 | `src/pmxt/transformer.py` | PMXT rows → NautilusTrader OrderBookDelta |
 | `src/pmxt/generator.py` | Generator that yields data chunks for add_data_iterator() |
-| `src/universe/resolver.py` | Slug patterns → market IDs → instruments |
+| `src/universe/gamma.py` | Gamma API client for market discovery |
 | `src/runner/engine.py` | Wires everything together, runs BacktestEngine |
 | `src/runner/tearsheet.py` | Computes PnL, Sharpe, drawdown from results |
 | `src/runner/mlflow_logger.py` | Logs to MLflow with experiment/variant/child hierarchy |

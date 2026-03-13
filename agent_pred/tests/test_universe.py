@@ -1,14 +1,8 @@
-"""Tests for universe config parsing and instrument building."""
-
-import json
-import tempfile
-from pathlib import Path
+"""Tests for instrument building."""
 
 from nautilus_trader.model.instruments import BinaryOption
 
-from universe.config import UniverseConfig
 from universe.instruments import build_instrument_maps, build_instruments_from_metadata
-from universe.resolver import UniverseResolver
 
 MARKET_INFO = {
     "condition_id": "0xabc123def456",
@@ -23,38 +17,6 @@ MARKET_INFO = {
         {"token_id": "444555666", "outcome": "No"},
     ],
 }
-
-
-class TestUniverseConfig:
-    def test_from_yaml(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
-            f.write("""
-universe_id: "test-universe"
-description: "Test universe"
-selection:
-  slugs:
-    - "bitcoin-*"
-  tags: ["crypto"]
-  condition_ids:
-    - "0xabc123"
-filters:
-  active: true
-  min_volume: 10000
-period:
-  start: "2026-03-01"
-  end: "2026-03-31"
-""")
-            f.flush()
-
-            config = UniverseConfig.from_yaml(Path(f.name))
-
-        assert config.universe_id == "test-universe"
-        assert "bitcoin-*" in config.selection.slugs
-        assert "crypto" in config.selection.tags
-        assert "0xabc123" in config.selection.condition_ids
-        assert config.filters.active is True
-        assert config.filters.min_volume == 10000
-        assert config.period.start == "2026-03-01"
 
 
 class TestInstrumentBuilding:
@@ -80,32 +42,3 @@ class TestInstrumentBuilding:
         assert "0xabc123def456" in market_ids
         assert "111222333" in instruments
         assert "444555666" in instruments
-
-
-class TestUniverseResolver:
-    def test_resolve_from_condition_ids(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache_dir = Path(tmpdir)
-            resolver = UniverseResolver(cache_dir)
-
-            # Save market metadata
-            resolver.save_metadata("0xabc123def456", MARKET_INFO)
-
-            # Resolve
-            instruments, instrument_ids, market_ids = resolver.resolve_from_condition_ids(
-                ["0xabc123def456"]
-            )
-
-            assert len(instruments) == 2
-            assert "0xabc123def456" in market_ids
-
-    def test_list_cached_markets(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache_dir = Path(tmpdir)
-            resolver = UniverseResolver(cache_dir)
-
-            resolver.save_metadata("0xabc123def456", MARKET_INFO)
-            markets = resolver.list_cached_markets()
-
-            assert len(markets) == 1
-            assert markets[0]["condition_id"] == "0xabc123def456"

@@ -9,7 +9,7 @@
 # This is a market microstructure limitation, not a code bug.
 #
 # Run:
-#   uv run python scripts/run_backtest.py configs/micro_scalper.yml --discover
+#   uv run python scripts/run_backtest.py configs/micro_scalper.yml
 
 mode: "backtest"
 
@@ -27,9 +27,10 @@ strategy:
     take_profit: null
     stop_loss: null
 
-condition_ids: []  # Use discovered markets, capped by max_markets
-
-max_markets: 20  # Cap discovery to keep backtest <5 min
+universe:
+  active: true
+  closed: false
+  max_markets: 20
 
 data:
   hours:

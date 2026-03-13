@@ -4,7 +4,7 @@
 # exits when price reverts above average or after hold_periods intervals.
 #
 # Run:
-#   uv run python scripts/run_backtest.py configs/mean_reversion.yml --discover
+#   uv run python scripts/run_backtest.py configs/mean_reversion.yml
 
 mode: "backtest"
 

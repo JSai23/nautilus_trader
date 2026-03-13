@@ -4,7 +4,7 @@
 # The orchestrator reads this file to determine which strategy to run.
 #
 # Run:
-#   uv run python scripts/run_backtest.py configs/active_strategy.yml --discover
+#   uv run python scripts/run_backtest.py configs/active_strategy.yml
 
 mode: "backtest"
 

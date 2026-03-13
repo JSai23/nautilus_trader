@@ -17,7 +17,7 @@ strategy:
     take_profit: 0.05
     stop_loss: -0.03
 
-condition_ids: []  # Empty = use all discovered markets with --discover
+condition_ids: []  # Empty = discover via universe: filters below
 
 data:
   hours:
@@ -35,29 +35,14 @@ mlflow:
 
 ## Running a Backtest
 
-### Auto-discovery mode (recommended for exploration)
-
-```bash
-uv run python scripts/run_backtest.py configs/example_backtest.yml --discover
-```
-
-This:
-1. Downloads first row group from PMXT parquet for each hour
-2. Extracts unique `market_id` + `token_id` pairs
-3. Saves market metadata JSONs to `data/markets/`
-4. Builds NautilusTrader instruments from metadata
-5. Streams PMXT data through BacktestEngine
-6. Runs strategy, generates tearsheet
-
-### Pre-cached metadata mode
-
-If you already have market metadata (from prior runs or the Polymarket CLI):
-
 ```bash
 uv run python scripts/run_backtest.py configs/example_backtest.yml
 ```
 
-Requires `data/markets/{condition_id}.json` files to exist.
+Market resolution is automatic:
+- If `condition_ids` are specified → fetches metadata via CLOB API
+- If `universe:` section is specified → discovers markets via Gamma API with server-side filtering
+- No caching — always fetches fresh market data
 
 ## Experiment Config (`src/runner/engine.py`)
 

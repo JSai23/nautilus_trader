@@ -1,0 +1,5 @@
+# Open Questions & Future Work
+
+1. **Can strategies access full market context (question text, end date, category, etc.)?** Our strategies currently only see orderbook data via NautilusTrader's `on_order_book_deltas`. But Polymarket markets have rich metadata — the question being asked, resolution date, category, volume. Can strategies access this through NautilusTrader's instrument/cache APIs, or do we need to pass it separately? This matters for strategies that should behave differently based on market type or time-to-expiry.
+
+2. **Should the base strategy provide a price history buffer?** Every strategy that needs lookback (trend_follower, contrarian, momentum_breakout, mean_reversion) manually creates `dict[InstrumentId, deque[float]]` and appends mid prices. NautilusTrader doesn't provide tick history for orderbook delta subscriptions — only for quote/trade tick subscriptions. Could the `PolymarketStrategy` base class offer a shared `self.mid_history(instrument_id, lookback=100)` so strategies don't each reinvent this? Or is it better left to each strategy since they may want different data (mid, bid, ask, spread)?

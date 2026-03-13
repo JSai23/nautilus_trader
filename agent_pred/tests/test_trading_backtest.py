@@ -7,6 +7,7 @@ trading pipeline produces actual fills and PnL.
 
 import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -17,8 +18,8 @@ from nautilus_trader.model.enums import AccountType, BookType, OmsType
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Money
 
-from conftest import discover_market_with_tokens, discover_volatile_market
-from pmxt.generator import pmxt_data_generator
+from pmxt.reader import read_local_filtered
+from pmxt.transformer import transform_row
 from runner.tearsheet import compute_tearsheet
 from strategy.imbalance import ImbalanceStrategy, ImbalanceStrategyConfig
 from strategy.mean_reversion import MeanReversionStrategy, MeanReversionStrategyConfig
@@ -49,11 +50,25 @@ def hour_bounds_ns(hour: str) -> tuple[int, int]:
     return int(start.timestamp() * 1_000_000_000), int(end.timestamp() * 1_000_000_000)
 
 
+def _local_data_generator(local_path, market_ids, instruments, instrument_ids):
+    """Generate NautilusTrader data from a local parquet file."""
+    for batch in read_local_filtered(local_path, market_ids):
+        transformed = []
+        for row in batch:
+            result = transform_row(row, instruments, instrument_ids)
+            if result is not None:
+                transformed.append(result)
+        if transformed:
+            transformed.sort(key=lambda d: d.ts_init)
+            yield transformed
+
+
 def build_test_engine(
     instruments: dict,
     instrument_ids: dict,
     market_ids: list[str],
     hours: list[str],
+    local_path: Path | None = None,
     balance: float = 10_000.0,
 ) -> tuple[BacktestEngine, list[str], datetime, datetime]:
     """Build a fully-configured BacktestEngine for testing.
@@ -71,12 +86,16 @@ def build_test_engine(
     for inst in instruments.values():
         engine.add_instrument(inst)
 
-    gen = pmxt_data_generator(
-        market_ids=market_ids,
-        hours=hours,
-        instruments=instruments,
-        instrument_ids=instrument_ids,
-    )
+    if local_path is not None:
+        gen = _local_data_generator(local_path, market_ids, instruments, instrument_ids)
+    else:
+        from pmxt.generator import pmxt_data_generator
+        gen = pmxt_data_generator(
+            market_ids=market_ids,
+            hours=hours,
+            instruments=instruments,
+            instrument_ids=instrument_ids,
+        )
     engine.add_data_iterator("pmxt", gen)
 
     instrument_id_strs = [str(iid) for iid in instrument_ids.values()]
@@ -89,14 +108,14 @@ def build_test_engine(
 
 class TestTradingBacktest:
     @pytest.mark.timeout(300)
-    def test_strategy_produces_fills_and_pnl(self):
+    def test_strategy_produces_fills_and_pnl(self, market_with_tokens, pmxt_local_path):
         """Full trading pipeline: PMXT -> engine -> order -> fill -> position -> PnL."""
-        market_info = discover_market_with_tokens(TEST_HOUR)
+        market_info = market_with_tokens
         instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
         assert len(instruments) > 0
 
         engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR],
+            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
         )
 
         config = SimpleTestStrategyConfig(
@@ -152,13 +171,13 @@ class TestTradingBacktest:
         engine.dispose()
 
     @pytest.mark.timeout(300)
-    def test_micro_scalper_generates_many_fills(self):
+    def test_micro_scalper_generates_many_fills(self, market_with_tokens, pmxt_local_path):
         """MicroScalperStrategy re-enters after exits, producing many fills."""
-        market_info = discover_market_with_tokens(TEST_HOUR)
+        market_info = market_with_tokens
         instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
 
         engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR],
+            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
         )
 
         config = MicroScalperStrategyConfig(
@@ -203,14 +222,14 @@ class TestTradingBacktest:
         engine.dispose()
 
     @pytest.mark.timeout(600)
-    def test_timer_momentum_on_volatile_market(self):
+    def test_timer_momentum_on_volatile_market(self, volatile_market, pmxt_local_path):
         """TimerMomentumStrategy uses base class interval timer and produces fills."""
-        market_info = discover_volatile_market(TEST_HOUR)
+        market_info = volatile_market
         instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
         start_ns, end_ns = hour_bounds_ns(TEST_HOUR)
 
         engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR],
+            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
         )
 
         config = TimerMomentumStrategyConfig(
@@ -256,13 +275,13 @@ class TestTradingBacktest:
         engine.dispose()
 
     @pytest.mark.timeout(300)
-    def test_imbalance_strategy_produces_positions(self):
+    def test_imbalance_strategy_produces_positions(self, market_with_tokens, pmxt_local_path):
         """ImbalanceStrategy with null stop_loss/take_profit enters positions."""
-        market_info = discover_market_with_tokens(TEST_HOUR)
+        market_info = market_with_tokens
         instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
 
         engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR],
+            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
         )
 
         config = ImbalanceStrategyConfig(
@@ -300,14 +319,14 @@ class TestTradingBacktest:
         engine.dispose()
 
     @pytest.mark.timeout(600)
-    def test_mean_reversion_on_volatile_market(self):
+    def test_mean_reversion_on_volatile_market(self, volatile_market, pmxt_local_path):
         """MeanReversionStrategy buys dips and sells on reversion."""
-        market_info = discover_volatile_market(TEST_HOUR)
+        market_info = volatile_market
         instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
         start_ns, end_ns = hour_bounds_ns(TEST_HOUR)
 
         engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR],
+            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
         )
 
         config = MeanReversionStrategyConfig(
@@ -355,14 +374,14 @@ class TestTradingBacktest:
         engine.dispose()
 
     @pytest.mark.timeout(600)
-    def test_spread_scalper_on_volatile_market(self):
+    def test_spread_scalper_on_volatile_market(self, volatile_market, pmxt_local_path):
         """SpreadScalperStrategy enters on tight spreads and exits on widening."""
-        market_info = discover_volatile_market(TEST_HOUR)
+        market_info = volatile_market
         instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
         start_ns, end_ns = hour_bounds_ns(TEST_HOUR)
 
         engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR],
+            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
         )
 
         config = SpreadScalperStrategyConfig(
@@ -411,14 +430,14 @@ class TestTradingBacktest:
         engine.dispose()
 
     @pytest.mark.timeout(600)
-    def test_momentum_breakout_on_volatile_market(self):
+    def test_momentum_breakout_on_volatile_market(self, volatile_market, pmxt_local_path):
         """MomentumBreakoutStrategy enters on sustained directional movement."""
-        market_info = discover_volatile_market(TEST_HOUR)
+        market_info = volatile_market
         instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
         start_ns, end_ns = hour_bounds_ns(TEST_HOUR)
 
         engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR],
+            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
         )
 
         config = MomentumBreakoutStrategyConfig(
@@ -466,14 +485,14 @@ class TestTradingBacktest:
         engine.dispose()
 
     @pytest.mark.timeout(600)
-    def test_random_baseline_on_volatile_market(self):
+    def test_random_baseline_on_volatile_market(self, volatile_market, pmxt_local_path):
         """RandomBaselineStrategy enters randomly and exits after fixed hold."""
-        market_info = discover_volatile_market(TEST_HOUR)
+        market_info = volatile_market
         instruments, instrument_ids, market_ids = build_instrument_maps([market_info])
         start_ns, end_ns = hour_bounds_ns(TEST_HOUR)
 
         engine, iid_strs, start_dt, end_dt = build_test_engine(
-            instruments, instrument_ids, market_ids, [TEST_HOUR],
+            instruments, instrument_ids, market_ids, [TEST_HOUR], local_path=pmxt_local_path,
         )
 
         config = RandomBaselineStrategyConfig(

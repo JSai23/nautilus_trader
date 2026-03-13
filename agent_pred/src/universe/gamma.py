@@ -1,7 +1,13 @@
 """Gamma API client for Polymarket market discovery.
 
-Fetches real market metadata from https://gamma-api.polymarket.com/markets,
-replacing the parquet-scanning hack that guessed Yes/No token assignments.
+Fetches market metadata from https://gamma-api.polymarket.com/markets.
+No caching — always fetches fresh data. Markets change; stale metadata
+causes silent bugs.
+
+Server-side filters (pushed to API): active, closed, end_date_min/max,
+start_date_min, volume_num_min, order, ascending.
+
+Client-side filters (API ignores these): slug_contains, categories.
 """
 
 from __future__ import annotations
@@ -9,7 +15,6 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -26,14 +31,28 @@ _PAGE_SIZE = 100
 
 @dataclass
 class MarketFilter:
-    """Filter criteria for Gamma API market queries."""
+    """Filter criteria for Gamma API market queries.
 
+    Server-side params are sent as query params to the Gamma API.
+    Client-side params are applied after fetching because the API ignores them.
+    """
+
+    # Server-side filters
     active: bool | None = None
     closed: bool | None = None
-    categories: list[str] = field(default_factory=list)
-    min_volume: float = 0.0
-    max_markets: int = 50
+    end_date_min: str | None = None  # ISO date, e.g. "2026-04-01"
+    end_date_max: str | None = None
+    start_date_min: str | None = None
+    volume_num_min: float | None = None
+    order: str | None = None  # camelCase field name, e.g. "volumeNum"
+    ascending: bool | None = None
+
+    # Client-side filters (API doesn't support these)
     slug_contains: str | None = None
+    categories: list[str] = field(default_factory=list)
+
+    # Pagination cap
+    max_markets: int = 50
 
 
 def fetch_markets(
@@ -41,7 +60,7 @@ def fetch_markets(
     offset: int = 0,
     limit: int = _PAGE_SIZE,
 ) -> list[dict[str, Any]]:
-    """Fetch markets from Gamma API with filtering.
+    """Fetch markets from Gamma API with server-side filtering.
 
     Returns raw Gamma API market dicts.
     """
@@ -54,6 +73,18 @@ def fetch_markets(
             params["active"] = str(filter.active).lower()
         if filter.closed is not None:
             params["closed"] = str(filter.closed).lower()
+        if filter.end_date_min:
+            params["end_date_min"] = filter.end_date_min
+        if filter.end_date_max:
+            params["end_date_max"] = filter.end_date_max
+        if filter.start_date_min:
+            params["start_date_min"] = filter.start_date_min
+        if filter.volume_num_min is not None and filter.volume_num_min > 0:
+            params["volume_num_min"] = str(filter.volume_num_min)
+        if filter.order:
+            params["order"] = filter.order
+        if filter.ascending is not None:
+            params["ascending"] = str(filter.ascending).lower()
 
     url = f"{GAMMA_MARKETS_ENDPOINT}?{urlencode(params)}"
     log.debug("Fetching %s", url)
@@ -73,11 +104,11 @@ def fetch_markets(
 
 
 def fetch_all_markets(filter: MarketFilter) -> list[dict[str, Any]]:
-    """Fetch markets with pagination, applying filters.
+    """Fetch markets with pagination, applying client-side filters.
 
-    Fetches up to filter.max_markets results, paginating through the API.
-    Client-side filters (min_volume, categories, slug_contains) are applied
-    after fetching since the Gamma API doesn't support all filter params.
+    Server-side filters are handled by fetch_markets().
+    Client-side filters (slug_contains, categories) are applied here.
+    Fetches up to filter.max_markets results.
     """
     results: list[dict[str, Any]] = []
     offset = 0
@@ -88,7 +119,7 @@ def fetch_all_markets(filter: MarketFilter) -> list[dict[str, Any]]:
             break
 
         for market in batch:
-            if _matches_filter(market, filter):
+            if _matches_client_filter(market, filter):
                 results.append(market)
                 if len(results) >= filter.max_markets:
                     break
@@ -106,8 +137,6 @@ def fetch_all_markets(filter: MarketFilter) -> list[dict[str, Any]]:
 def fetch_market_clob(condition_id: str) -> dict[str, Any] | None:
     """Fetch a single market's metadata from the CLOB API.
 
-    The CLOB API supports direct lookup by condition_id and returns data
-    in our internal metadata format (no conversion needed).
     Returns None if the market is not found or the request fails.
     """
     url = f"{CLOB_API_BASE}/markets/{condition_id}"
@@ -132,12 +161,7 @@ def fetch_market_clob(condition_id: str) -> dict[str, Any] | None:
 
 
 def clob_to_metadata(clob: dict[str, Any]) -> dict[str, Any]:
-    """Normalize CLOB API response to our internal metadata format.
-
-    The CLOB API already uses our field names. We just normalize numeric
-    fields to strings (to match what parse_polymarket_instrument expects)
-    and extract the token fields we need.
-    """
+    """Normalize CLOB API response to our internal metadata format."""
     tokens = []
     for t in clob.get("tokens", []):
         tokens.append({
@@ -161,13 +185,8 @@ def clob_to_metadata(clob: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _matches_filter(market: dict[str, Any], filter: MarketFilter) -> bool:
-    """Apply client-side filters that the API doesn't support natively."""
-    # Volume filter
-    volume = market.get("volumeNum", 0) or 0
-    if filter.min_volume and volume < filter.min_volume:
-        return False
-
+def _matches_client_filter(market: dict[str, Any], filter: MarketFilter) -> bool:
+    """Apply client-side filters the API doesn't support natively."""
     # Category filter
     if filter.categories:
         category = (market.get("category") or "").lower()
@@ -232,110 +251,19 @@ def gamma_to_metadata(market: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-class GammaMarketCache:
-    """Persistent JSON cache for Gamma API market metadata."""
+def discover_markets(filter: MarketFilter) -> list[dict[str, Any]]:
+    """Discover markets via Gamma API and convert to internal metadata format.
 
-    def __init__(self, cache_dir: Path):
-        self._dir = cache_dir
-        self._dir.mkdir(parents=True, exist_ok=True)
-
-    def get(self, condition_id: str) -> dict[str, Any] | None:
-        path = self._path(condition_id)
-        if path.exists():
-            with open(path) as f:
-                return json.load(f)
-        return None
-
-    def put(self, metadata: dict[str, Any]) -> Path:
-        condition_id = metadata["condition_id"]
-        path = self._path(condition_id)
-        with open(path, "w") as f:
-            json.dump(metadata, f, indent=2)
-        return path
-
-    def has(self, condition_id: str) -> bool:
-        return self._path(condition_id).exists()
-
-    def list_all(self) -> list[dict[str, Any]]:
-        results = []
-        for path in sorted(self._dir.glob("*.json")):
-            with open(path) as f:
-                results.append(json.load(f))
-        return results
-
-    def count(self) -> int:
-        return len(list(self._dir.glob("*.json")))
-
-    def delete(self, condition_id: str) -> bool:
-        """Delete a cached market entry. Returns True if it existed."""
-        path = self._path(condition_id)
-        if path.exists():
-            path.unlink()
-            return True
-        return False
-
-    def purge_fabricated(self) -> int:
-        """Delete all cache entries with fabricated metadata.
-
-        Fabricated entries have questions matching "Discovered market",
-        "Test market", or "Volatile market" — produced by the old hack.
-        """
-        import re
-        pattern = re.compile(r"^(Discovered|Test|Volatile) market")
-        purged = 0
-        for path in list(self._dir.glob("*.json")):
-            try:
-                with open(path) as f:
-                    data = json.load(f)
-                question = data.get("question", "")
-                if pattern.match(question):
-                    path.unlink()
-                    purged += 1
-            except (json.JSONDecodeError, OSError):
-                # Corrupt file — purge it too
-                path.unlink()
-                purged += 1
-        log.info("Purged %d fabricated cache entries", purged)
-        return purged
-
-    def _path(self, condition_id: str) -> Path:
-        return self._dir / f"{condition_id}.json"
-
-
-def discover_markets(
-    filter: MarketFilter,
-    cache: GammaMarketCache,
-    refresh: bool = False,
-) -> list[dict[str, Any]]:
-    """Discover markets via Gamma API and cache metadata.
-
-    Returns list of metadata dicts in our internal format.
-    If refresh=False, returns cached data for condition_ids that already exist.
+    No caching — always fetches fresh data. Returns list of metadata dicts.
     """
     raw_markets = fetch_all_markets(filter)
     results = []
-    cached_count = 0
-    new_count = 0
 
     for raw in raw_markets:
         condition_id = raw.get("conditionId", "")
         if not condition_id:
             continue
+        results.append(gamma_to_metadata(raw))
 
-        if not refresh and cache.has(condition_id):
-            metadata = cache.get(condition_id)
-            cached_count += 1
-        else:
-            metadata = gamma_to_metadata(raw)
-            cache.put(metadata)
-            new_count += 1
-
-        results.append(metadata)
-
-    log.info(
-        "Discovered %d markets (%d cached, %d new)",
-        len(results),
-        cached_count,
-        new_count,
-    )
+    log.info("Discovered %d markets from Gamma API", len(results))
     return results

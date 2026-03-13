@@ -4,7 +4,7 @@
 # Target: hundreds of round trips to stress-test order, fill, position, and PnL pipeline.
 #
 # Run:
-#   uv run python scripts/run_backtest.py configs/tick_stress.yml --discover
+#   uv run python scripts/run_backtest.py configs/tick_stress.yml
 
 mode: "backtest"
 
@@ -24,10 +24,11 @@ strategy:
     take_profit: null
     stop_loss: null
 
-# Use discovered markets — all active in the data window
-condition_ids: []
-
-max_markets: 25
+# Discover all active markets from Gamma API
+universe:
+  active: true
+  closed: false
+  max_markets: 25
 
 data:
   hours:

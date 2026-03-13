@@ -11,9 +11,6 @@ Usage:
 
     # Discover markets and download their data
     uv run python scripts/download_data.py --discover-markets --active --limit 20 --hours 2026-03-09T09
-
-    # Refresh cached metadata from Gamma API
-    uv run python scripts/download_data.py --discover-markets --refresh
 """
 
 import argparse
@@ -23,15 +20,13 @@ from pathlib import Path
 
 from pmxt.index import PMXTIndex
 from pmxt.reader import cache_filtered_data
-from universe.gamma import GammaMarketCache, MarketFilter, discover_markets
+from universe.gamma import MarketFilter, discover_markets
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger(__name__)
 
 DEFAULT_CACHE_DIR = Path("data/pmxt/cache")
 DEFAULT_INDEX_PATH = Path("data/pmxt/index.json")
-DEFAULT_METADATA_DIR = Path("data/markets")
-
 
 def download_and_cache(
     market_ids: list[str],
@@ -69,8 +64,6 @@ def main():
     parser.add_argument("--hours", nargs="+", help="Hour identifiers (e.g., 2026-03-09T09)")
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--index-path", type=Path, default=DEFAULT_INDEX_PATH)
-    parser.add_argument("--metadata-dir", type=Path, default=DEFAULT_METADATA_DIR)
-
     # Gamma API discovery
     parser.add_argument("--discover-markets", action="store_true",
                         help="Discover markets via Gamma API")
@@ -84,8 +77,10 @@ def main():
                         help="Filter by categories (e.g., crypto politics)")
     parser.add_argument("--slug-contains", type=str, default=None,
                         help="Filter by slug substring")
-    parser.add_argument("--refresh", action="store_true",
-                        help="Re-fetch metadata from API even if cached")
+    parser.add_argument("--end-date-min", type=str, default=None,
+                        help="Minimum end date (ISO format, e.g. 2026-04-01)")
+    parser.add_argument("--order-by", type=str, default=None,
+                        help="Sort field (camelCase, e.g. volumeNum)")
 
     args = parser.parse_args()
 
@@ -93,13 +88,14 @@ def main():
         mf = MarketFilter(
             active=True if args.active else None,
             closed=False if args.active else None,
-            min_volume=args.min_volume,
+            volume_num_min=args.min_volume,
             max_markets=args.limit,
             categories=args.categories,
             slug_contains=args.slug_contains,
+            end_date_min=args.end_date_min,
+            order=args.order_by,
         )
-        cache = GammaMarketCache(args.metadata_dir)
-        markets = discover_markets(mf, cache, refresh=args.refresh)
+        markets = discover_markets(mf)
 
         print(f"\nDiscovered {len(markets)} markets:")
         for m in markets:

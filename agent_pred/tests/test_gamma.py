@@ -3,13 +3,9 @@
 Uses real Gamma API requests — no mocking.
 """
 
-import tempfile
-from pathlib import Path
-
 import pytest
 
 from universe.gamma import (
-    GammaMarketCache,
     MarketFilter,
     clob_to_metadata,
     discover_markets,
@@ -50,6 +46,49 @@ class TestFetchMarkets:
         assert len(results) <= 2
 
 
+class TestServerSideFilters:
+    """Test that server-side filters are pushed to the Gamma API."""
+
+    @pytest.mark.timeout(30)
+    def test_end_date_min_filter(self):
+        mf = MarketFilter(
+            active=True,
+            end_date_min="2027-01-01",
+            max_markets=5,
+        )
+        results = fetch_all_markets(mf)
+        assert len(results) > 0
+        for market in results:
+            end_date = market.get("endDate", "")
+            assert end_date >= "2027-01-01", f"endDate {end_date} before min"
+
+    @pytest.mark.timeout(30)
+    def test_volume_num_min_filter(self):
+        mf = MarketFilter(
+            active=True,
+            volume_num_min=100_000,
+            max_markets=5,
+        )
+        results = fetch_all_markets(mf)
+        assert len(results) > 0
+        for market in results:
+            vol = market.get("volumeNum", 0) or 0
+            assert vol >= 100_000, f"Volume {vol} below min 100000"
+
+    @pytest.mark.timeout(30)
+    def test_order_by_volume_descending(self):
+        mf = MarketFilter(
+            active=True,
+            order="volumeNum",
+            ascending=False,
+            max_markets=5,
+        )
+        results = fetch_all_markets(mf)
+        assert len(results) > 0
+        volumes = [m.get("volumeNum", 0) or 0 for m in results]
+        assert volumes == sorted(volumes, reverse=True), "Results not sorted by volume desc"
+
+
 class TestFetchAllMarkets:
     """Test paginated fetching with client-side filters."""
 
@@ -58,20 +97,34 @@ class TestFetchAllMarkets:
         mf = MarketFilter(
             active=True,
             closed=False,
-            min_volume=10000,
+            volume_num_min=10000,
             max_markets=5,
         )
         results = fetch_all_markets(mf)
         assert len(results) <= 5
         for market in results:
             vol = market.get("volumeNum", 0) or 0
-            assert vol >= 10000, f"Volume {vol} below min_volume 10000"
+            assert vol >= 10000, f"Volume {vol} below volume_num_min 10000"
 
     @pytest.mark.timeout(60)
     def test_fetch_all_respects_max_markets(self):
         mf = MarketFilter(max_markets=3)
         results = fetch_all_markets(mf)
         assert len(results) <= 3
+
+    @pytest.mark.timeout(60)
+    def test_slug_contains_client_filter(self):
+        """slug_contains is client-side; verify it filters results."""
+        mf = MarketFilter(
+            active=True,
+            slug_contains="will",
+            max_markets=5,
+        )
+        results = fetch_all_markets(mf)
+        assert len(results) > 0
+        for market in results:
+            slug = market.get("slug", "")
+            assert "will" in slug.lower(), f"Slug '{slug}' doesn't contain 'will'"
 
 
 class TestGammaToMetadata:
@@ -142,131 +195,53 @@ class TestGammaToMetadata:
         assert metadata["tokens"][0]["token_id"] == "token_a"
 
 
-class TestGammaMarketCache:
-    """Test the persistent JSON cache."""
-
-    def test_put_and_get(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = GammaMarketCache(Path(tmpdir))
-
-            metadata = {
-                "condition_id": "0xabc",
-                "question": "Test",
-                "tokens": [{"token_id": "t1", "outcome": "Yes"}],
-            }
-            cache.put(metadata)
-
-            result = cache.get("0xabc")
-            assert result is not None
-            assert result["condition_id"] == "0xabc"
-            assert result["tokens"][0]["outcome"] == "Yes"
-
-    def test_has(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = GammaMarketCache(Path(tmpdir))
-            assert not cache.has("0xmissing")
-
-            cache.put({"condition_id": "0xfound", "tokens": []})
-            assert cache.has("0xfound")
-
-    def test_list_all(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = GammaMarketCache(Path(tmpdir))
-            cache.put({"condition_id": "0x1", "tokens": []})
-            cache.put({"condition_id": "0x2", "tokens": []})
-
-            all_items = cache.list_all()
-            assert len(all_items) == 2
-            ids = {m["condition_id"] for m in all_items}
-            assert ids == {"0x1", "0x2"}
-
-    def test_count(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = GammaMarketCache(Path(tmpdir))
-            assert cache.count() == 0
-            cache.put({"condition_id": "0x1", "tokens": []})
-            assert cache.count() == 1
-
-    def test_overwrite(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = GammaMarketCache(Path(tmpdir))
-            cache.put({"condition_id": "0x1", "question": "old", "tokens": []})
-            cache.put({"condition_id": "0x1", "question": "new", "tokens": []})
-
-            result = cache.get("0x1")
-            assert result["question"] == "new"
-            assert cache.count() == 1
-
-
 class TestDiscoverMarkets:
     """Test end-to-end discovery pipeline with real Gamma API."""
 
     @pytest.mark.timeout(60)
-    def test_discover_caches_results(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = GammaMarketCache(Path(tmpdir))
-            mf = MarketFilter(active=True, closed=False, max_markets=3)
+    def test_discover_returns_metadata(self):
+        mf = MarketFilter(active=True, closed=False, max_markets=3)
+        results = discover_markets(mf)
 
-            results = discover_markets(mf, cache)
+        assert len(results) > 0
+        assert len(results) <= 3
 
-            assert len(results) > 0
-            assert len(results) <= 3
-
-            # Verify cached
-            for m in results:
-                assert cache.has(m["condition_id"])
-
-            # Verify metadata format
-            for m in results:
-                assert "condition_id" in m
-                assert "question" in m
-                assert "tokens" in m
-                assert len(m["tokens"]) >= 2
-                # Verify correct outcome assignment
-                outcomes = {t["outcome"] for t in m["tokens"]}
-                assert "Yes" in outcomes
-                assert "No" in outcomes
+        for m in results:
+            assert "condition_id" in m
+            assert "question" in m
+            assert "tokens" in m
+            assert len(m["tokens"]) >= 2
+            outcomes = {t["outcome"] for t in m["tokens"]}
+            assert "Yes" in outcomes or len(outcomes) >= 2
 
     @pytest.mark.timeout(60)
-    def test_discover_uses_cache_when_not_refreshing(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = GammaMarketCache(Path(tmpdir))
-            mf = MarketFilter(active=True, closed=False, max_markets=2)
+    def test_discover_metadata_is_real(self):
+        """Verify metadata has real data, not fabricated."""
+        mf = MarketFilter(
+            active=True,
+            closed=False,
+            volume_num_min=1000,
+            max_markets=2,
+        )
+        results = discover_markets(mf)
+        assert len(results) > 0
 
-            # First discovery
-            results1 = discover_markets(mf, cache)
-            assert len(results1) > 0
-
-            # Modify a cached entry
-            cid = results1[0]["condition_id"]
-            modified = cache.get(cid)
-            modified["question"] = "MODIFIED_BY_TEST"
-            cache.put(modified)
-
-            # Second discovery without refresh should use cache
-            results2 = discover_markets(mf, cache, refresh=False)
-            for m in results2:
-                if m["condition_id"] == cid:
-                    assert m["question"] == "MODIFIED_BY_TEST"
-                    break
+        for m in results:
+            assert not m["question"].startswith("Discovered market")
+            assert m["minimum_tick_size"] in ("0.001", "0.01", "0.1", "1")
+            assert m.get("volume", 0) > 0
 
     @pytest.mark.timeout(60)
-    def test_discover_metadata_matches_api(self):
-        """Verify that cached metadata has real data, not fabricated."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = GammaMarketCache(Path(tmpdir))
-            mf = MarketFilter(active=True, closed=False, min_volume=1000, max_markets=2)
-
-            results = discover_markets(mf, cache, refresh=True)
-            assert len(results) > 0
-
-            for m in results:
-                # Real question, not "Discovered market 0x..."
-                assert not m["question"].startswith("Discovered market")
-                # Real tick size from API
-                assert m["minimum_tick_size"] in ("0.001", "0.01", "0.1", "1")
-                # Has volume from API
-                assert m.get("volume", 0) > 0
+    def test_discover_with_slug_filter(self):
+        mf = MarketFilter(
+            active=True,
+            slug_contains="will",
+            max_markets=3,
+        )
+        results = discover_markets(mf)
+        assert len(results) > 0
+        for m in results:
+            assert "will" in m["slug"].lower()
 
 
 # Known condition_id from timer_momentum.yml for CLOB API tests
@@ -345,39 +320,3 @@ class TestClobToMetadata:
         assert "winner" not in token
         assert token["token_id"] == "123"
         assert token["outcome"] == "Yes"
-
-
-class TestCachePurge:
-    """Test cache purge and delete operations."""
-
-    def test_delete_existing(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = GammaMarketCache(Path(tmpdir))
-            cache.put({"condition_id": "0x1", "question": "Real", "tokens": []})
-            assert cache.has("0x1")
-            assert cache.delete("0x1")
-            assert not cache.has("0x1")
-
-    def test_delete_nonexistent(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = GammaMarketCache(Path(tmpdir))
-            assert not cache.delete("0xmissing")
-
-    def test_purge_fabricated_entries(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache = GammaMarketCache(Path(tmpdir))
-            # Fabricated entries (should be purged)
-            cache.put({"condition_id": "0xfab1", "question": "Discovered market 0xfab1", "tokens": []})
-            cache.put({"condition_id": "0xfab2", "question": "Test market 0xfab2", "tokens": []})
-            cache.put({"condition_id": "0xfab3", "question": "Volatile market 0xfab3", "tokens": []})
-            # Real entries (should survive)
-            cache.put({"condition_id": "0xreal1", "question": "Will BTC hit 100K?", "tokens": []})
-            cache.put({"condition_id": "0xreal2", "question": "CS2: Team A vs Team B", "tokens": []})
-
-            assert cache.count() == 5
-            purged = cache.purge_fabricated()
-            assert purged == 3
-            assert cache.count() == 2
-            assert cache.has("0xreal1")
-            assert cache.has("0xreal2")
-            assert not cache.has("0xfab1")

@@ -13,30 +13,32 @@ How to define, resolve, and construct tradeable instruments from Polymarket mark
 
 Each market has 2+ tokens (typically Yes and No). Each token becomes a separate `BinaryOption` instrument in NautilusTrader.
 
-## Universe Config (`src/universe/config.py`)
+## Market Discovery (`src/universe/gamma.py`)
 
-Define universes in YAML:
+Markets are discovered via the Gamma API at runtime. Define filters in the `universe:` section of experiment config YAMLs:
 
 ```yaml
-# configs/universes/crypto_hourly.yml
-universe_id: "crypto-hourly"
-description: "Crypto markets with hourly resolution"
-selection:
-  slugs:
-    - "will-bitcoin-*"
-    - "will-ethereum-*"
-  condition_ids:
-    - "0xabc123..."
-period:
-  start: "2026-03-01"
-  end: "2026-03-10"
+# In configs/example_backtest.yml
+universe:
+  slug_contains: "bitcoin"       # client-side filter (API ignores slug queries)
+  end_date_min: "2026-04-01"     # server-side (pushed to API)
+  volume_min: 10000              # server-side (volume_num_min)
+  active: true                   # server-side
+  max_markets: 20                # pagination cap
 ```
 
-Parse with:
-```python
-from universe.config import UniverseConfig
+Or use explicit `condition_ids:` for specific markets:
+```yaml
+condition_ids:
+  - "0xabc123..."
+```
 
-config = UniverseConfig.from_yaml(Path("configs/universes/crypto_hourly.yml"))
+Programmatic usage:
+```python
+from universe.gamma import MarketFilter, discover_markets
+
+mf = MarketFilter(active=True, volume_num_min=10000, max_markets=20)
+market_infos = discover_markets(mf)  # Always fresh from Gamma API
 ```
 
 ## Instrument Building (`src/universe/instruments.py`)
@@ -74,18 +76,6 @@ Uses `parse_polymarket_instrument()` from the NautilusTrader Polymarket adapter 
 }
 ```
 
-## Universe Resolver (`src/universe/resolver.py`)
-
-Resolves a `UniverseConfig` to concrete `condition_ids` — expanding slug patterns via the Gamma API.
-
-```python
-from universe.resolver import UniverseResolver
-
-resolver = UniverseResolver(metadata_cache_dir=Path("data/markets"))
-instruments, instrument_ids, market_ids = resolver.resolve_from_config(config)
-# Returns (instruments dict, instrument_ids dict, market_ids set)
-```
-
 ## Instrument ID Format
 
 NautilusTrader instruments are identified by `InstrumentId`:
@@ -101,4 +91,4 @@ Example: `12345-0xabc123-Yes.POLYMARKET`
 uv run pytest tests/test_universe.py -v
 ```
 
-Tests cover YAML parsing, instrument building from metadata, and resolver logic.
+Tests cover instrument building from metadata.

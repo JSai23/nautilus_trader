@@ -5,20 +5,18 @@ How to run a backtest end-to-end: from universe definition to results in MLflow.
 ## Quick Start
 
 ```bash
-# Auto-discover markets from PMXT data and run a backtest:
 cd agent_pred
-uv run python scripts/run_backtest.py configs/example_backtest.yml --discover
+uv run python scripts/run_backtest.py configs/example_backtest.yml
 ```
 
 This will:
-1. Stream PMXT data for the configured hours
-2. Discover markets and extract token_ids
-3. Save market metadata to `data/markets/`
-4. Build instruments and feed data through BacktestEngine
-5. Run the configured strategy
-6. Print tearsheet summary
-7. Save results to `results/{run_id}/`
-8. Optionally log to MLflow
+1. Discover markets via Gamma API (using `universe:` filters) or resolve explicit `condition_ids` via CLOB API
+2. Build NautilusTrader instruments from market metadata
+3. Stream PMXT data for the configured hours
+4. Feed data through BacktestEngine and run the strategy
+5. Print tearsheet summary
+6. Save results to `results/{run_id}/`
+7. Optionally log to MLflow
 
 ## Config Format
 
@@ -32,7 +30,7 @@ strategy:
     imbalance_threshold: 0.3
     trade_size: 10.0
 
-condition_ids: []  # Empty = use all discovered markets
+condition_ids: []  # Empty = discover via universe: filters
 
 data:
   hours:

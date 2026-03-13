@@ -5,7 +5,7 @@
 # any strategy type regardless of signal quality.
 #
 # Run:
-#   uv run python scripts/run_backtest.py configs/random_baseline.yml --discover
+#   uv run python scripts/run_backtest.py configs/random_baseline.yml
 
 mode: "backtest"
 

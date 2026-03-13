@@ -2,18 +2,55 @@
 
 import json
 import logging
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import fsspec
+import pytest
 import pyarrow.parquet as pq
 
 from pmxt.reader import file_url
-from universe.gamma import GammaMarketCache, fetch_market_clob
+from universe.gamma import fetch_market_clob
 
 log = logging.getLogger(__name__)
 
-_MARKET_CACHE = GammaMarketCache(Path("data/markets"))
+TEST_HOUR = "2026-03-09T09"
+
+
+@pytest.fixture(scope="session")
+def _pmxt_local_path():
+    """Session-scoped: download the PMXT parquet once to a temp file."""
+    url = file_url(TEST_HOUR)
+    log.info("Downloading PMXT parquet: %s", url)
+    fs = fsspec.filesystem("http")
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+        tmp_path = tmp.name
+        with fs.open(url, "rb") as remote:
+            tmp.write(remote.read())
+    log.info("PMXT parquet cached locally: %s", tmp_path)
+    yield Path(tmp_path)
+    Path(tmp_path).unlink(missing_ok=True)
+
+
+@pytest.fixture(scope="session")
+def pmxt_local_path(_pmxt_local_path):
+    """Expose the local parquet path for test engine data reads."""
+    return _pmxt_local_path
+
+
+@pytest.fixture(scope="session")
+def market_with_tokens(_pmxt_local_path):
+    """Session-scoped: discover a market once, reuse across all tests."""
+    pf = pq.ParquetFile(str(_pmxt_local_path))
+    return _discover_market_with_tokens_from_pf(pf, TEST_HOUR)
+
+
+@pytest.fixture(scope="session")
+def volatile_market(_pmxt_local_path):
+    """Session-scoped: discover a volatile market once, reuse across all tests."""
+    pf = pq.ParquetFile(str(_pmxt_local_path))
+    return _discover_volatile_market_from_pf(pf, TEST_HOUR)
 
 
 def _adapt_metadata_for_testing(metadata: dict, hour: str) -> dict:
@@ -28,7 +65,7 @@ def _adapt_metadata_for_testing(metadata: dict, hour: str) -> dict:
     2. Sets minimum_order_size to "1" (tests use trade_size=1.0, but real
        markets require 5+ — we're testing strategy logic, not exchange limits)
     """
-    metadata = dict(metadata)  # shallow copy to avoid mutating cache
+    metadata = dict(metadata)  # shallow copy to avoid mutating caller's dict
 
     # Extend end_date if market resolved before test data window
     end_date = metadata.get("end_date_iso", "")
@@ -55,15 +92,9 @@ def _adapt_metadata_for_testing(metadata: dict, hour: str) -> dict:
 
 
 def _resolve_test_metadata(condition_id: str, tokens: set[str], hour: str) -> dict:
-    """Resolve market metadata for tests: cache -> CLOB API -> fabricated fallback."""
-    cached = _MARKET_CACHE.get(condition_id)
-    if cached:
-        log.info("Using cached metadata for %s", condition_id[:16])
-        return _adapt_metadata_for_testing(cached, hour)
-
+    """Resolve market metadata for tests: CLOB API -> fabricated fallback."""
     clob = fetch_market_clob(condition_id)
     if clob:
-        _MARKET_CACHE.put(clob)
         log.info("Fetched CLOB API metadata for %s", condition_id[:16])
         return _adapt_metadata_for_testing(clob, hour)
 
@@ -85,21 +116,14 @@ def _resolve_test_metadata(condition_id: str, tokens: set[str], hour: str) -> di
     }
 
 
-def discover_market_with_tokens(hour: str) -> dict:
-    """Discover a market from PMXT data and extract token_ids.
+def _discover_market_with_tokens_from_pf(pf: pq.ParquetFile, hour: str) -> dict:
+    """Discover a market from a pre-loaded ParquetFile.
 
-    Reads the first row group of the PMXT parquet file for the given hour,
-    finds the market with the most activity, and builds a market_info dict
-    suitable for instrument construction.
+    Reads the first row group, finds the market with the most activity,
+    and builds a market_info dict suitable for instrument construction.
     """
-    url = file_url(hour)
-    fs = fsspec.filesystem("http")
-    f = fs.open(url)
-    pf = pq.ParquetFile(f)
-
     table = pf.read_row_group(0, columns=["market_id", "update_type", "data"])
     rows = table.to_pylist()
-    f.close()
 
     market_tokens: dict[str, set[str]] = {}
     market_rows: dict[str, list[dict]] = {}
@@ -116,7 +140,6 @@ def discover_market_with_tokens(hour: str) -> dict:
         market_tokens[mid].add(token_id)
         market_rows[mid].append(row)
 
-    # Pick market with most activity
     best_market = max(market_rows, key=lambda mid: len(market_rows[mid]))
     tokens = market_tokens[best_market]
 
@@ -130,19 +153,13 @@ def discover_market_with_tokens(hour: str) -> dict:
     return _resolve_test_metadata(best_market, tokens, hour)
 
 
-def discover_volatile_market(hour: str) -> dict:
-    """Discover a volatile market from PMXT data.
+def _discover_volatile_market_from_pf(pf: pq.ParquetFile, hour: str) -> dict:
+    """Discover a volatile market from a pre-loaded ParquetFile.
 
     Reads all row groups and finds a market where max_bid > min_ask
     for at least one token (price moved enough for FOK wins).
     """
-    url = file_url(hour)
-    fs = fsspec.filesystem("http")
-    f = fs.open(url)
-    pf = pq.ParquetFile(f)
-
-    # Track per-token price ranges grouped by market
-    token_stats: dict[str, dict] = {}  # token_id -> {min_ask, max_bid, market_id}
+    token_stats: dict[str, dict] = {}
     market_tokens: dict[str, set[str]] = {}
 
     for rg_idx in range(pf.metadata.num_row_groups):
@@ -171,9 +188,7 @@ def discover_volatile_market(hour: str) -> dict:
                 s = token_stats[token_id]
                 s["min_ask"] = min(s["min_ask"], ask)
                 s["max_bid"] = max(s["max_bid"], bid)
-    f.close()
 
-    # Find market with best gap (max_bid - min_ask) and 2+ tokens
     best_mid = None
     best_gap = 0.0
     for tid, stats in token_stats.items():
@@ -192,3 +207,25 @@ def discover_volatile_market(hour: str) -> dict:
     log.info("Volatile market %s, gap=%.3f, %d tokens", best_mid[:16], best_gap, len(tokens))
 
     return _resolve_test_metadata(best_mid, tokens, hour)
+
+
+def discover_market_with_tokens(hour: str) -> dict:
+    """Discover a market from PMXT data and extract token_ids (HTTP download)."""
+    url = file_url(hour)
+    fs = fsspec.filesystem("http")
+    f = fs.open(url)
+    pf = pq.ParquetFile(f)
+    result = _discover_market_with_tokens_from_pf(pf, hour)
+    f.close()
+    return result
+
+
+def discover_volatile_market(hour: str) -> dict:
+    """Discover a volatile market from PMXT data (HTTP download)."""
+    url = file_url(hour)
+    fs = fsspec.filesystem("http")
+    f = fs.open(url)
+    pf = pq.ParquetFile(f)
+    result = _discover_volatile_market_from_pf(pf, hour)
+    f.close()
+    return result
