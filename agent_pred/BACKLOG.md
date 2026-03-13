@@ -18,7 +18,7 @@
    - `src/strategy/*.py` (except `base.py`) — concrete strategies
    - Possibly their own tests
 
-2. **Live universe discovery — dynamic market subscription at runtime.** Currently in progress (dev loop running). New markets need to be discovered, instruments added to cache, and data feeds subscribed — all without restarting the node. Major blocker for live trading.
+2. ~~**Live universe discovery — dynamic market subscription at runtime.** DONE. `MarketDiscoveryActor` polls Gamma API, diffs against cache, publishes new instruments via DataEngine pipeline. 16 tests passing.~~
 
 ## Observability & Monitoring
 
