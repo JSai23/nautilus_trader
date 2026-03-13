@@ -125,16 +125,24 @@ class PolymarketStrategy(Strategy):
         self._record_tob = config.record_top_of_book
         self._tob_records: list[dict] = []
 
+        # Fill records — in-strategy tracking to avoid cache eviction loss
+        self._fill_records: list[dict] = []
+
         # Heartbeat (Block 5) — engine injects _heartbeat_dir before run
         self._heartbeat_dir: Path | None = None
         self._heartbeat_run_id: str = ""
         self._heartbeat_start_time: float = 0.0
 
     def on_start(self) -> None:
-        # Subscribe to instrument updates so on_instrument() fires
-        # for dynamically discovered markets
+        # For dynamic instruments, set up a periodic cache poll to detect
+        # new instruments from the MarketDiscoveryActor. The Polymarket data
+        # client does not implement _subscribe_instruments, so we poll instead.
         if self._dynamic_instruments:
-            self.subscribe_instruments(POLYMARKET_VENUE)
+            self.clock.set_timer(
+                name="instrument_discovery_check",
+                interval=pd.Timedelta(seconds=10),
+                callback=self._on_instrument_check,
+            )
 
         for instrument_id in self._instrument_ids:
             self._subscribe_instrument(instrument_id)
@@ -230,7 +238,7 @@ class PolymarketStrategy(Strategy):
                     outcome = t.get("outcome", "")
                     break
         self._market_meta[instrument_id] = MarketMeta(
-            slug=info.get("slug", ""),
+            slug=info.get("slug", "") or info.get("market_slug", ""),
             condition_id=info.get("condition_id", parts[0] if parts else ""),
             token_id=token_id,
             outcome=outcome,
@@ -283,6 +291,19 @@ class PolymarketStrategy(Strategy):
 
     def on_new_instrument(self, instrument: Instrument) -> None:
         """Called when a new instrument is dynamically discovered. Override in subclasses."""
+
+    def _on_instrument_check(self, event: TimeEvent) -> None:
+        """Poll cache for new instruments from MarketDiscoveryActor.
+
+        Workaround for Polymarket data client not implementing
+        _subscribe_instruments. Checks every 10s for instruments in
+        the cache that aren't yet subscribed.
+        """
+        for iid in self.cache.instrument_ids(venue=POLYMARKET_VENUE):
+            if iid not in self._subscribed_ids:
+                instrument = self.cache.instrument(iid)
+                if instrument:
+                    self.on_instrument(instrument)
 
     def _on_interval_event(self, event: TimeEvent) -> None:
         """Dispatch interval timer events to subclass on_interval()."""
@@ -415,6 +436,15 @@ class PolymarketStrategy(Strategy):
             f"qty={event.last_qty} @ {event.last_px} "
             f"(fills={self._orders_filled}/{self._orders_submitted})"
         )
+        # Track fill in-strategy to avoid cache eviction loss
+        self._fill_records.append({
+            "timestamp": str(event.ts_event),
+            "instrument_id": str(event.instrument_id),
+            "slug": meta.slug if meta else "",
+            "side": event.order_side.name,
+            "qty": float(event.last_qty),
+            "price": float(event.last_px),
+        })
 
     def on_order_canceled(self, event: OrderCanceled) -> None:
         self._orders_canceled += 1

@@ -171,6 +171,77 @@ def fetch_all_markets(filter: MarketFilter) -> list[dict[str, Any]]:
     return results
 
 
+def fetch_market_by_slug(slug: str) -> dict[str, Any] | None:
+    """Fetch a single market by exact slug from the Gamma API.
+
+    Uses the Gamma API `slug=` query parameter for server-side exact match.
+    Returns normalized metadata dict, or None if not found.
+    """
+    url = f"{GAMMA_MARKETS_ENDPOINT}?{urlencode({'slug': slug})}"
+    log.debug("Fetching by slug: %s", url)
+
+    req = Request(url, headers={
+        "Accept": "application/json",
+        "User-Agent": "agent-pred/0.1",
+    })
+    try:
+        with urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as e:
+        log.warning("Gamma API slug fetch failed for %s: %s", slug, e)
+        return None
+
+    if not isinstance(data, list) or not data:
+        return None
+
+    return gamma_to_metadata(data[0])
+
+
+def discover_current_windows(
+    slug_prefix: str,
+    window_seconds: int = 900,
+    count: int = 3,
+) -> list[dict[str, Any]]:
+    """Discover currently-active and upcoming time-windowed markets.
+
+    For markets like btc-updown-15m where slugs contain a Unix timestamp
+    (e.g., btc-updown-15m-1773433800), computes the current window and
+    fetches by exact slug. Returns current + next `count-1` upcoming windows.
+
+    Parameters
+    ----------
+    slug_prefix : str
+        Slug prefix before the timestamp (e.g., "btc-updown-15m").
+    window_seconds : int
+        Window duration in seconds (default: 900 = 15 minutes).
+    count : int
+        Number of windows to fetch (current + upcoming).
+
+    Returns
+    -------
+    list[dict]
+        Market metadata dicts for the current and upcoming windows.
+    """
+    import time
+
+    now = int(time.time())
+    current_window = (now // window_seconds) * window_seconds
+
+    results = []
+    for i in range(count):
+        ts = current_window + i * window_seconds
+        slug = f"{slug_prefix}-{ts}"
+        metadata = fetch_market_by_slug(slug)
+        if metadata:
+            results.append(metadata)
+            log.info("Found current window: %s (cid=%s)", slug, metadata["condition_id"][:16])
+        else:
+            log.debug("No market for slug: %s", slug)
+
+    log.info("Discovered %d current-window markets for %s", len(results), slug_prefix)
+    return results
+
+
 def fetch_market_clob(condition_id: str) -> dict[str, Any] | None:
     """Fetch a single market's metadata from the CLOB API.
 
@@ -288,11 +359,36 @@ def gamma_to_metadata(market: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Known time-windowed slug prefixes and their window durations (seconds)
+_TIME_WINDOWED_SLUGS: dict[str, int] = {
+    "btc-updown-15m": 900,
+    "btc-updown-4h": 14400,
+}
+
+
 def discover_markets(filter: MarketFilter) -> list[dict[str, Any]]:
     """Discover markets via Gamma API and convert to internal metadata format.
 
     No caching — always fetches fresh data. Returns list of metadata dicts.
+
+    For time-windowed markets (e.g., btc-updown-15m), uses exact slug lookup
+    to find the currently-active window instead of paginating through future
+    markets that haven't started trading yet.
     """
+    # Check if slug_contains matches a known time-windowed market type
+    if filter.slug_contains:
+        for prefix, window_secs in _TIME_WINDOWED_SLUGS.items():
+            if prefix in filter.slug_contains:
+                log.info(
+                    "Detected time-windowed market %s — using current-window discovery",
+                    prefix,
+                )
+                return discover_current_windows(
+                    slug_prefix=prefix,
+                    window_seconds=window_secs,
+                    count=filter.max_markets,
+                )
+
     raw_markets = fetch_all_markets(filter)
     results = []
 

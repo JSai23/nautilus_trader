@@ -12,15 +12,22 @@ Config YAML `universe: slug_contains: "btc-updown-15m"` → `discover_markets()`
 
 **Evidence:** 3 btc-updown-4h markets discovered, 6 instruments (Up/Down each), cross-validated against direct Gamma API.
 
-### Paper/Live Discovery — UNVERIFIED
+### Paper/Live Discovery — PASS
 Same Gamma API slug matching, but polling on a timer (`MarketDiscoveryActor`). Detects new open markets, builds instruments, publishes to DataEngine cache, notifies strategy via `on_instrument()`, subscribes to orderbook WebSocket feeds. Runs continuously — markets come and go.
 
-**Needs:** End-to-end paper trading run showing discovery events in logs.
+**Evidence (run ce5c096f, 20-min session):**
+- Initial poll: 3 markets (1773438300, 1773439200, 1773440100)
+- Window rotation at ~22:00 UTC: `discover_current_windows()` returns new market 1773441000
+- `Discovered new instrument: 0x9da3fe51...` (2 instruments: Up + Down)
+- `Published 2 new instruments (total known: 4 conditions)`
+- `on_instrument: dynamic discovery — btc-updown-15m-1773441000 outcome=Down/Up`
+- `SimulatedExchange: Added instrument ... and created matching engine`
 
-### Universe Cross-Validation — PASS (backtest), UNVERIFIED (paper)
+### Universe Cross-Validation — PASS (backtest), PASS (paper)
 Compare discovered universe against external source (pm cli, direct Gamma API curl) to verify we are picking up ALL matching markets and not silently dropping any.
 
 **Evidence (backtest):** 3/3 markets consistent with direct Gamma API curl.
+**Evidence (paper):** 3/3 current-window markets discovered via `discover_current_windows()`, cross-validated against direct Gamma API.
 
 ---
 
@@ -31,10 +38,10 @@ PMXT historical orderbook parquets. Every orderbook snapshot pushed through the 
 
 **Evidence:** 432 ticks over 2h, realistic bid/ask values.
 
-### Live Data — UNVERIFIED
+### Live Data — PASS
 Polymarket WebSocket feed (`wss://ws-subscriptions-clob.polymarket.com`). Public, no auth needed. MARKET channel subscriptions by token_id.
 
-**Needs:** Paper trading run showing WebSocket connection and orderbook updates.
+**Evidence (run c23781eb):** 24,770 ticks in 120s (~206/sec). Real bid/ask prices (0.12-0.77). 6 instrument subscriptions active.
 
 ### Top-of-Book Storage — PASS
 Strategy accumulates (timestamp_ns, instrument_id, best_bid, best_ask, bid_qty, ask_qty) into a DataFrame on each tick. Configurable (off by default for performance). Saved as CSV/parquet artifact after run. NOT full orderbook depth — just BBO.
@@ -45,27 +52,31 @@ Strategy accumulates (timestamp_ns, instrument_id, best_bid, best_ask, bid_qty, 
 
 ## Strategy Features
 
-### Market Metadata Map — PASS (backtest), UNVERIFIED (paper on_instrument hydration)
+### Market Metadata Map — PASS (backtest + paper)
 `self._market_meta: dict[InstrumentId, MarketMeta]` in base strategy. Contains slug, condition_id, token_id, outcome (Yes/No), question, start_date, end_date. Hydrated on `on_start()` for backtest instruments, on `on_instrument()` for live-discovered instruments. Enables strategy logic like: parse slug timestamp → determine active 15m window → only trade that window.
 
 **Evidence (backtest):** All 6 instruments have full metadata. `slug_timestamp()` and `is_active_at()` verified.
-**Needs (paper):** `on_instrument()` hydrating metadata for dynamically discovered instruments.
+**Evidence (paper):** 6 instruments with metadata: `meta: btc-updown-15m-1773435600 (0xb5e23443...) | outcome=Up token=...`
 
-### on_instrument — UNVERIFIED
-Fires when `MarketDiscoveryActor` publishes a new instrument (paper/live mode with `dynamic_instruments=True`). Strategy auto-subscribes to orderbook data and adds to instrument list.
+### on_instrument — PASS
+Fires when `MarketDiscoveryActor` publishes a new instrument (paper/live mode with `dynamic_instruments=True`). Strategy auto-subscribes to orderbook data and adds to instrument list. Cache-polling workaround (10s timer) since Polymarket adapter doesn't implement `_subscribe_instruments`.
 
-**Needs:** Paper trading logs showing on_instrument fires, strategy subscribes, trading begins.
+**Evidence (run ce5c096f):**
+- Initial: 6 instruments hydrated with full metadata on `on_start()`
+- Dynamic: `on_instrument: dynamic discovery — btc-updown-15m-1773441000 (0x9da3fe51...) outcome=Down`
+- `on_instrument: dynamic discovery — btc-updown-15m-1773441000 (0x9da3fe51...) outcome=Up`
+- Both Up and Down tokens for new market discovered and subscribed
 
 ### on_timer (on_interval) — PASS
 Recurring timer at configurable interval (e.g., every 1 minute). Bounded by start_time_ns/end_time_ns to avoid epoch-start spam. Strategy checks all instruments each tick.
 
 **Evidence:** ~120 callbacks/2h at 1-min interval. Timer fires within start/end bounds.
 
-### on_tick (on_order_book_deltas) — PASS (backtest), UNVERIFIED (paper)
+### on_tick (on_order_book_deltas) — PASS (backtest + paper)
 Fires on every orderbook update. High frequency — hundreds to thousands per instrument per hour. Must call `super()` for exit condition checks.
 
 **Evidence (backtest):** 432 ticks/2h. Both singular and plural handlers working.
-**Needs (paper):** Live WebSocket data flowing through to on_tick callbacks.
+**Evidence (paper):** 20,390-39,187 ticks in 120s. Real-time BTC price data flowing through callbacks.
 
 ### Exit Lifecycle — PARTIAL
 Base class handles exits automatically:
@@ -143,20 +154,69 @@ Cross-validated 3/3 markets against Gamma API.
 
 ---
 
-## Paper Trading Specific — ALL UNVERIFIED
+## Paper Trading Specific
 
-These behaviors require a live paper trading session to verify:
+### Credential Bypass — PASS
+Dummy credentials work for MARKET WebSocket and L0 API calls (public, no auth).
+Node builds and starts without POLYMARKET_API_KEY or other env vars.
 
-| Behavior | What to verify |
-|----------|---------------|
-| WebSocket connection | MARKET channel connects without auth |
-| Live orderbook flow | on_tick fires with real-time data |
-| MarketDiscoveryActor | Polls Gamma API, finds active markets |
-| on_instrument | Fires for dynamically discovered instruments |
-| Metadata hydration (paper) | _market_meta populated via on_instrument |
-| Active window trading | Strategy trades only the current 15m btc-updown window |
-| Paper MLflow | Metrics logged DURING execution, not just at end |
-| Paper heartbeat | status.json updated during paper run |
-| Paper artifacts | PnL curve, position timeline, fills CSV generated |
-| Credential bypass | Dummy creds work — no env vars needed |
-| Graceful shutdown | Node stops cleanly after paper_duration_seconds |
+**Evidence:** TradingNode starts, instruments load from CLOB API, WebSocket connects — all with dummy private_key, funder, api_key, api_secret, passphrase.
+
+### WebSocket Connection — PASS
+MARKET WebSocket connects to `wss://ws-subscriptions-clob.polymarket.com/ws/market` and receives live orderbook data.
+
+**Evidence (run c23781eb):** 24,770 ticks in 120s (~206 ticks/sec). Real bid/ask prices (0.12-0.77 range). 6 instrument subscriptions active.
+
+### Live Orderbook Flow — PASS
+`on_order_book_deltas` fires on every WebSocket update. Strategy processes real-time book data.
+
+**Evidence:** `on_tick #48000: btc-updown-15m-1773433800 (0x872a5229...) bid=0.12 ask=0.13` — prices move with real BTC price action during the 15-minute window.
+
+### MarketDiscoveryActor — PASS
+Actor starts with correct filter config, polls Gamma API, discovers new markets when window rotates.
+
+**Evidence (run ce5c096f, 20-min session with 3-min polls):**
+- Startup: `Starting MarketDiscoveryActor: poll_interval=3min`, `Found 3 existing condition_ids in cache`
+- 7 Gamma API polls over 20 minutes (all successful)
+- Window rotation at ~22:00 UTC detected by poll at 22:02
+- New market 1773441000 discovered, 2 instruments published
+- `on_stop`: processes pending discoveries on shutdown
+
+### on_instrument — PASS
+Initial instruments hydrated with full metadata (slug, condition_id, token_id, outcome, dates).
+Dynamic discovery verified: new instruments trigger `on_instrument()` with full metadata.
+
+**Evidence (run ce5c096f):**
+- Initial: 6 instruments with metadata on `on_start()`
+- Dynamic: `on_instrument: dynamic discovery — btc-updown-15m-1773441000 (0x9da3fe51...) outcome=Down/Up`
+- SimulatedExchange automatically created matching engines for new instruments
+
+### Active Window Trading — PASS
+`tick_always` with `active_window_only=True` trades ONLY instruments in the active 15-min window. Uses `MarketMeta.is_active_at(time.time())` to filter. Existing positions on inactive instruments can still be sold.
+
+**Evidence (run fcad3fb0):** 3 markets loaded (6 instruments), ALL 67 fills on active window `btc-updown-15m-1773435600` only. Zero fills on inactive windows `1773436500` and `1773437400`. Active window log: `active_window: btc-updown-15m-1773435600 active=True window=1773435600..1773436500 now=1773435820`.
+
+### Paper MLflow — UNVERIFIED
+Not implemented in paper mode. MLflow logging is in `engine.py` for backtests only.
+
+### Paper Heartbeat — PASS
+Heartbeat timer fires every 60s. status.json updated with live metrics during execution.
+
+**Evidence (run c23781eb):** `heartbeat: fills=47 ticks=16330 sim_ts=1773434862302272000`. status.json shows: fills=47, submitted=4456, canceled=2629, ticks=16330, instruments=6.
+
+### Paper Artifacts — PASS
+fills.csv, status.json, and 4 PNG visualizations generated on shutdown.
+Same artifact pipeline as backtest (`generate_all_artifacts()` via ReportProvider).
+
+**Evidence (run beff974f):** `fills.csv` (8KB, 40 fills), `status.json` (completed), `pnl_curve.png` (40KB), `position_timeline.png` (18KB), `trade_distribution.png` (17KB), `instrument_lifecycle.png` (20KB).
+
+### Paper Order Fills — PASS
+Orders submit and fill against sandbox execution client with live book data. In-strategy fill tracking (`_fill_records`) ensures all fills are captured without cache eviction loss.
+
+**Evidence (run ce5c096f, 20 min):** 137 fills. BUY=425.0, SELL=460.0 (ratio 1:1.08). Prices within bid/ask spread. Fills on multiple active windows as they rotate.
+
+### Graceful Shutdown — PASS
+Node stops cleanly after `paper_duration_seconds` via SIGALRM → node.stop() → DISPOSED.
+All components disposed in order. No zombie processes.
+
+**Evidence:** SIGALRM fires at 120s, node stops in ~13s. Final log: `TradingNode: DISPOSED`. Artifacts saved before dispose.

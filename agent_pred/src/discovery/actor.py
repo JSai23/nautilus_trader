@@ -110,6 +110,13 @@ class MarketDiscoveryActor(Actor):
             callback=self._on_poll_timer,
         )
 
+    def on_stop(self) -> None:
+        # Process any pending discoveries before shutdown
+        if self._pending_markets:
+            self.log.info("Processing pending discoveries on shutdown")
+            self._process_discovered_markets(self._pending_markets)
+            self._pending_markets = []
+
     def _on_poll_timer(self, event: TimeEvent) -> None:
         # Thread safety note: _pending_markets is written by the executor
         # thread (_poll_gamma_api) and read here on the main thread. Python

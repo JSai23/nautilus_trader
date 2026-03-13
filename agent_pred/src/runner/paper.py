@@ -14,8 +14,12 @@ on strategies that have dynamic_instruments=True.
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import signal
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from nautilus_trader.adapters.polymarket import (
@@ -38,6 +42,7 @@ from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import TraderId
 
 from discovery.actor import MarketDiscoveryActor, MarketDiscoveryConfig
+from runner.artifacts import generate_all_artifacts
 from runner.engine import ExperimentConfig
 from runner.utils import import_strategy_class
 
@@ -91,6 +96,7 @@ def _build_discovery_config(config: ExperimentConfig) -> MarketDiscoveryConfig |
 def run_paper(
     config: ExperimentConfig,
     market_infos: list[dict[str, Any]],
+    results_dir: Path | None = None,
 ) -> None:
     """Run a paper trading session with live data and simulated execution.
 
@@ -100,6 +106,8 @@ def run_paper(
         Parsed experiment configuration with mode="paper".
     market_infos : list[dict]
         Market metadata dicts (from Gamma API or CLOB API).
+    results_dir : Path | None
+        Directory for status.json, fills CSV, and other artifacts.
 
     """
     # Build instrument ID strings for the provider
@@ -137,7 +145,7 @@ def run_paper(
         exec_clients={
             SANDBOX_VENUE: SandboxExecutionClientConfig(
                 venue=SANDBOX_VENUE,
-                starting_balances=[f"{config.starting_balance} USDC-POS"],
+                starting_balances=[f"{config.starting_balance} USDC.e"],
                 oms_type="NETTING",
                 account_type="CASH",
                 book_type="L2_MBP",
@@ -178,6 +186,15 @@ def run_paper(
     strategy = strategy_cls(strategy_config)
     node.trader.add_strategy(strategy)
 
+    # Set up results directory and heartbeat
+    run_id = str(uuid.uuid4())[:8]
+    if results_dir is None:
+        results_dir = Path("results") / f"paper-{run_id}"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    strategy._heartbeat_dir = results_dir
+    strategy._heartbeat_run_id = run_id
+    log.info("Paper run_id=%s, results_dir=%s", run_id, results_dir)
+
     # Register MarketDiscoveryActor if discovery is configured
     if discovery_config is not None:
         discovery_actor = MarketDiscoveryActor(discovery_config)
@@ -205,11 +222,98 @@ def run_paper(
     signal.signal(signal.SIGALRM, _stop_handler)
     signal.alarm(duration)
 
+    # Write initial status
+    _write_status(results_dir, {
+        "run_id": run_id,
+        "status": "running",
+        "strategy": config.strategy_path,
+        "mode": "paper",
+        "started": datetime.now(tz=timezone.utc).isoformat(),
+    })
+
     try:
         node.run()
     except KeyboardInterrupt:
         log.info("Paper trading interrupted by user")
     finally:
         signal.alarm(0)  # Cancel alarm
+        # Save artifacts before dispose
+        _save_paper_artifacts(strategy, results_dir, run_id, market_infos)
         node.dispose()
         log.info("Paper trading session ended")
+
+
+def _write_status(results_dir: Path, status: dict[str, Any]) -> None:
+    """Write status.json to results directory."""
+    with open(results_dir / "status.json", "w") as f:
+        json.dump(status, f, indent=2)
+
+
+def _save_paper_artifacts(
+    strategy: Any,
+    results_dir: Path,
+    run_id: str,
+    market_infos: list[dict[str, Any]],
+) -> None:
+    """Save paper trading artifacts after run completes."""
+    try:
+        from nautilus_trader.analysis.reporter import ReportProvider
+
+        # Use in-strategy fill records (avoids cache eviction losing older fills)
+        rows = list(strategy._fill_records)
+        if rows:
+            import csv
+            fills_path = results_dir / "fills.csv"
+            with open(fills_path, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+            # Log BUY/SELL balance for verification
+            buy_qty = sum(r["qty"] for r in rows if r["side"] == "BUY")
+            sell_qty = sum(r["qty"] for r in rows if r["side"] == "SELL")
+            log.info(
+                "Saved %d fills to %s (BUY=%.1f, SELL=%.1f)",
+                len(rows), fills_path, buy_qty, sell_qty,
+            )
+
+        # Generate visualization PNGs using ReportProvider DataFrames
+        try:
+            orders = strategy.cache.orders()
+            positions = strategy.cache.positions()
+            fills_df = ReportProvider.generate_fills_report(orders)
+            positions_df = ReportProvider.generate_positions_report(positions)
+
+            generated = generate_all_artifacts(
+                fills_df=fills_df,
+                positions_df=positions_df,
+                results_dir=results_dir,
+                market_infos=market_infos,
+            )
+            if generated:
+                log.info("Generated %d visualization artifacts", len(generated))
+        except Exception as e:
+            log.warning("PNG artifact generation failed: %s", e)
+
+        # Top-of-book data if recorded
+        tob_df = strategy.get_top_of_book_df()
+        if not tob_df.empty:
+            tob_path = results_dir / "top_of_book.csv"
+            tob_df.to_csv(tob_path, index=False)
+            log.info("Saved top-of-book data to %s", tob_path)
+
+        # Final status
+        _write_status(results_dir, {
+            "run_id": run_id,
+            "status": "completed",
+            "mode": "paper",
+            "fills": strategy._orders_filled,
+            "submitted": strategy._orders_submitted,
+            "canceled": strategy._orders_canceled,
+            "rejected": strategy._orders_rejected,
+            "ticks": strategy._tick_count_total,
+            "instruments": len(strategy._instrument_ids),
+            "finished": datetime.now(tz=timezone.utc).isoformat(),
+        })
+        log.info("Saved paper artifacts to %s", results_dir)
+    except Exception as e:
+        log.error("Failed to save paper artifacts: %s", e)
