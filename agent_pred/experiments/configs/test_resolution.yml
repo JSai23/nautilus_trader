@@ -7,7 +7,7 @@ strategy:
     trade_size: 5.0
     buy_after_ticks: 3
     sell_after_ticks: 10
-    record_top_of_book: true
+    exit_before_resolution_secs: 87000  # 24h+10min — fires ~11:50 in data window
 
 universe:
   slug_contains: "btc-updown-4h"
@@ -19,4 +19,4 @@ data:
 
 mlflow:
   experiment: "testing"
-  parent_run: "tick-always"
+  parent_run: "resolution-test"

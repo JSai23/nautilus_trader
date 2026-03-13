@@ -26,6 +26,7 @@ from nautilus_trader.model.objects import Money
 
 from pmxt.generator import pmxt_data_generator
 from pmxt.index import PMXTIndex
+from runner.artifacts import generate_all_artifacts
 from runner.mlflow_logger import MLflowLogger
 from runner.tearsheet import Tearsheet, compute_tearsheet
 from runner.utils import import_strategy_class
@@ -260,6 +261,10 @@ def run_backtest(
         strategy = strategy_cls(strategy_config)
         engine.add_strategy(strategy)
 
+        # Inject heartbeat directory for periodic status updates (Block 5)
+        strategy._heartbeat_dir = results_dir
+        strategy._heartbeat_run_id = run_id
+
         # Run with explicit time range to initialize clocks correctly
         log.info("Starting backtest: %d hours of data", len(config.data_hours))
         engine.run(start=start_dt, end=end_dt)
@@ -295,7 +300,15 @@ def run_backtest(
         )
 
         # Save artifacts
-        _save_artifacts(result, results_dir)
+        _save_artifacts(result, results_dir, market_infos=market_infos)
+
+        # Save top-of-book data if recorded (Block 6)
+        if hasattr(strategy, "get_top_of_book_df"):
+            tob_df = strategy.get_top_of_book_df()
+            if not tob_df.empty:
+                tob_path = results_dir / "top_of_book.csv"
+                tob_df.to_csv(tob_path, index=False)
+                log.info("Saved %d top-of-book records to %s", len(tob_df), tob_path)
 
         # Log to MLflow
         if config.mlflow_experiment:
@@ -357,7 +370,11 @@ def _write_status(results_dir: Path, status: dict[str, Any]) -> None:
         json.dump(status, f, indent=2)
 
 
-def _save_artifacts(result: RunResult, results_dir: Path) -> None:
+def _save_artifacts(
+    result: RunResult,
+    results_dir: Path,
+    market_infos: list[dict[str, Any]] | None = None,
+) -> None:
     """Save backtest artifacts to disk."""
     # Tearsheet
     with open(results_dir / "tearsheet.json", "w") as f:
@@ -382,6 +399,16 @@ def _save_artifacts(result: RunResult, results_dir: Path) -> None:
     }
     with open(results_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
+
+    # Visualization artifacts (Block 5)
+    generated = generate_all_artifacts(
+        fills_df=result.fills_df,
+        positions_df=result.positions_df,
+        results_dir=results_dir,
+        market_infos=market_infos,
+    )
+    if generated:
+        log.info("Generated %d visualization artifacts", len(generated))
 
     log.info("Saved artifacts to %s", results_dir)
 

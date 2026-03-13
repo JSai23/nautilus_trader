@@ -125,6 +125,13 @@ def run_paper(
             POLYMARKET: PolymarketDataClientConfig(
                 instrument_config=instrument_provider_config,
                 compute_effective_deltas=True,
+                # Dummy credentials — MARKET WebSocket and L0 API calls are public,
+                # but the factory resolves env vars when these are None.
+                private_key="0x0000000000000000000000000000000000000000000000000000000000000001",
+                funder="0x0000000000000000000000000000000000000000",
+                api_key="dummy",
+                api_secret="dummy",
+                passphrase="dummy",
             ),
         },
         exec_clients={
