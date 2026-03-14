@@ -1107,42 +1107,49 @@ class TestConvergenceExit:      # Group by exit type
 
 ## 9. Expected Test Counts and Timing
 
-### After migration
+### After implementation (actual)
 
 | Tier | File | Tests | Time |
 |------|------|-------|------|
-| 1 | test_unit.py | ~11 | < 0.5s |
+| 1 | test_unit.py | 14 | < 0.1s |
 | 1 | test_tearsheet.py | 16 | < 0.1s |
 | 1 | test_transformer.py | 9 | < 0.1s |
 | 1 | test_universe.py | 2 | < 0.1s |
 | 1 | test_mlflow_logger.py | 8 | < 1s |
 | 1/2 | test_discovery.py | 15 | < 2s |
-| 2 | test_lifecycle.py | ~13 | < 15s |
-| 2 | test_exits.py | ~8 | < 10s |
-| 2 | test_orders.py | ~3 | < 3s |
-| 2 | test_artifacts_integration.py | ~5 | < 2s |
-| 2 | test_runner.py | ~3 | < 5s |
-| 2 | test_trading_backtest.py | 3 | < 5s |
-| **Fast total** | | **~96** | **< 40s** |
+| 2 | test_lifecycle.py | 10 | ~5s |
+| 2 | test_exits.py | 8 | < 0.3s |
+| 2 | test_orders.py | 3 | ~5s |
+| 2 | test_artifacts_integration.py | 5 | ~1s |
+| 2 | test_runner.py | 3 | ~15s |
+| 2 | test_real_strategy.py | 4 | ~6s |
+| 2 | test_log_verification.py | 4 | ~6s |
+| 2 | test_tearsheet_cross_validation.py | 3 | ~4.5s |
+| **Fast total** | | **111** | **~52s** |
 | 3 | test_pmxt_reader.py | 4 | ~2 min |
 | 3 | test_gamma.py | 17 | ~1 min |
 | 3 | test_integration.py | 1 | ~3 min |
-| **Full total** | | **~118** | **< 5 min** |
+| 3 | test_trading_backtest.py | 3 | ~4 min |
+| 3 | test_paper_properties.py | 3 | ~5 min |
+| **Full total** | | **~138** | **< 15 min** |
 
-**Note on timing estimates:** Each Tier 2 test creates a function-scoped BacktestEngine, loads bundled data via PyArrow (~100ms), transforms ~1000 rows (~300ms), and runs a strategy. Estimated ~0.5-1.5s per test. The < 40s target is conservative — actual timing depends on engine creation overhead and number of fills per test.
+**Timing notes:** Fast suite runs at ~52s (over the planned 40s target). The additional time comes from `test_runner.py` (15s) and `test_real_strategy.py`/`test_log_verification.py`/`test_tearsheet_cross_validation.py` (~5s each) which all run full backtests through `run_backtest()`. The synthetic data exit tests are extremely fast (~0.3s total for 8 tests).
 
 ### Improvement
 
 | Metric | Before | After |
 |--------|--------|-------|
-| Total tests | 81 | ~118 |
-| Fast suite time | ~6 min (all tests) | < 40s (Tier 1+2) |
+| Total tests | 81 | 138 |
+| Fast suite time | ~6 min (all tests) | ~52s (Tier 1+2) |
 | BEHAVIORS.md coverage | ~30% | ~95% (all 33 behaviors mapped) |
-| Network-dependent tests | ~24 (always run) | ~22 (opt-in only) |
+| Network-dependent tests | ~24 (always run) | ~27 (opt-in only) |
 | Exit lifecycle tests | 0 | 8 |
 | Artifact tests | 0 | 5 |
 | Runner pipeline tests | 0 | 3 |
-| Active window trading test | 0 | 1 |
+| Real strategy tests | 0 | 4 |
+| Log verification tests | 0 | 4 |
+| Tearsheet cross-validation | 0 | 3 |
+| Paper trading tests | 0 | 3 |
 
 ---
 
