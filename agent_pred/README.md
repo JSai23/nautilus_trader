@@ -101,3 +101,68 @@ MLflow tracking with experiment/variant/child-run hierarchy. Set `mlflow:` secti
 # Strategy development loop (write → backtest → iterate)
 ./agents/run-strategy-loop.sh
 ```
+
+## Project Structure
+
+```
+agent_pred/
+├── src/                        # Framework code (importable packages)
+│   ├── strategy/               #   Base strategy class, exit lifecycle, market metadata
+│   │   └── base.py             #     PolymarketStrategy — all strategies extend this
+│   ├── runner/                 #   Execution layer
+│   │   ├── engine.py           #     Backtest engine: config → engine → strategy → results
+│   │   ├── paper.py            #     Paper trading: TradingNode + live WebSocket data
+│   │   ├── tearsheet.py        #     PnL metrics from fill pairs (win_rate, sharpe, etc.)
+│   │   ├── artifacts.py        #     PnL curve, position timeline, trade distribution PNGs
+│   │   ├── mlflow_logger.py    #     MLflow experiment/variant/child-run hierarchy
+│   │   └── utils.py            #     Dynamic strategy class import
+│   ├── pmxt/                   #   Historical data pipeline (parquet → NautilusTrader)
+│   │   ├── reader.py           #     Stream PMXT parquets from r2.pmxt.dev
+│   │   ├── transformer.py      #     Raw ticks → NautilusTrader OrderBookDeltas
+│   │   ├── generator.py        #     Combine reader + transformer for engine injection
+│   │   └── index.py            #     PMXT market index lookup
+│   ├── universe/               #   Market discovery
+│   │   ├── gamma.py            #     Gamma API discovery + CLOB API condition_id lookup
+│   │   └── instruments.py      #     Build NautilusTrader instruments from market metadata
+│   └── discovery/              #   Live market discovery
+│       └── actor.py            #     MarketDiscoveryActor — polls for new markets in paper/live
+│
+├── experiments/                # Strategy research (consumer code, not framework)
+│   ├── strategies/             #   Concrete strategy implementations
+│   │   ├── momentum_drift.py   #     MomentumDrift — timer-based trend following with TP/SL
+│   │   ├── tick_always.py      #     Baseline: buy/sell on every book update
+│   │   ├── timer_always.py     #     Baseline: buy/sell on every interval
+│   │   ├── log_only.py         #     Test harness: logs data, no trades
+│   │   └── simple_test.py      #     Test harness: places one order
+│   └── configs/                #   Experiment config YAMLs
+│       ├── momentum_drift.yml  #     Main strategy config (btc-updown-4h)
+│       ├── momentum_drift_*.yml#     IS/OOS variants for validation
+│       ├── tick_always.yml     #     Baseline tick config
+│       ├── timer_always.yml    #     Baseline timer config
+│       └── paper_tick.yml      #     Paper trading config
+│
+├── scripts/                    # CLI entry points
+│   └── run_backtest.py         #   Dispatches backtest or paper mode from config YAML
+│
+├── tests/                      # pytest suite (81 tests, ~6 min)
+│   ├── conftest.py             #   Session-scoped fixtures, local parquet caching
+│   ├── test_trading_backtest.py#   Full backtest integration tests
+│   ├── test_tearsheet.py       #   Tearsheet computation tests
+│   └── ...                     #   Unit tests for each src/ module
+│
+├── docs/                       # Documentation
+│   └── textbook/               #   7-chapter guide (overview → live trading)
+│
+├── agents/                     # Dev loop infrastructure
+│   ├── run.sh                  #   Worker/reviewer loop orchestrator
+│   ├── run-strategy-loop.sh    #   Strategy loop launcher (sets session dir + python.md spec)
+│   ├── prompts/                #   Role primitives (worker.md, reviewer.md, session.md)
+│   ├── session/                #   Generic dev loop session prompts
+│   └── strategy-loop/session/  #   Strategy loop session prompts
+│
+├── CLAUDE.md                   # Framework instructions for Claude Code
+├── README.md                   # This file
+├── BEHAVIORS.md                # Behavior verification tracking (PASS/UNVERIFIED/FAIL)
+├── BUGS.md                     # Known issues tracker
+└── pyproject.toml              # Dependencies and build config
+```
