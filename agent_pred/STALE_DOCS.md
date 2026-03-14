@@ -8,10 +8,10 @@ Replaced all references with `momentum_drift` / `MomentumDrift`:
 - `README.md` — FIXED
 - `CLAUDE.md` — FIXED
 - `experiments/CLAUDE.md` — FIXED (added momentum_drift to strategy table)
-- `textbook/ch1_overview.md` — was not actually stale (no reference found)
-- `textbook/ch5_backtests.md` — FIXED
-- `textbook/ch6_mlflow.md` — FIXED
-- `textbook/ch7_live.md` — FIXED
+- `docs/textbook/ch1_overview.md` — was not actually stale (no reference found)
+- `docs/textbook/ch5_backtests.md` — FIXED
+- `docs/textbook/ch6_mlflow.md` — FIXED
+- `docs/textbook/ch7_live.md` — FIXED
 
 ## Stale CLI Flags: `headless-reference.md` — FIXED
 

@@ -12,3 +12,4 @@ __pycache__/
 
 # Dev loop artifacts
 agents/
+.script_logs/

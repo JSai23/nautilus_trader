@@ -18,6 +18,8 @@ agent_pred/
 ├── scripts/                # CLI entry point
 │   └── run_backtest.py     # Run backtest or paper trading from config YAML
 ├── tests/                  # pytest test suite
+├── docs/                   # Detailed documentation
+│   └── textbook/           # Framework textbook (ch1-ch7)
 ├── agents/                 # Dev loop infrastructure (gitignored)
 │   ├── run.sh              # Worker/reviewer loop orchestrator
 │   ├── strategy-loop/      # Strategy development loop prompts
