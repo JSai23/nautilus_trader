@@ -433,12 +433,17 @@ pq.write_table(table, "tests/data/test_hour.parquet")
 For behavior tests that need specific price paths (convergence, TP/SL), create synthetic orderbook data programmatically:
 
 ```python
-def make_book_snapshot(instrument, instrument_id, bid: float, ask: float, ts_ns: int):
-    """Create an OrderBookDeltas with a single bid/ask level."""
+def make_book_snapshot(instrument, instrument_id, bid: float, ask: float, ts_ns: int,
+                       bid_qty: int = 1000, ask_qty: int = 1000):
+    """Create an OrderBookDeltas with a single bid/ask level.
+
+    bid_qty/ask_qty control depth. Use bid_qty < trade_size to simulate
+    insufficient bid liquidity (FOK SELL will cancel).
+    """
     from pmxt.transformer import transform_book_snapshot
     data = {
-        "bids": [[str(bid), "1000"]],
-        "asks": [[str(ask), "1000"]],
+        "bids": [[str(bid), str(bid_qty)]],
+        "asks": [[str(ask), str(ask_qty)]],
         "timestamp": ts_ns / 1e9,
     }
     return transform_book_snapshot(data, instrument_id, instrument, ts_ns, ts_ns)
@@ -500,7 +505,9 @@ For synthetic data tests, a separate fixture:
 def make_synthetic_engine(instrument, instrument_id, price_path, start_ns, end_ns):
     """Build an engine with synthetic orderbook data following a specific price path.
 
-    price_path: list of (timestamp_ns, bid, ask) tuples
+    price_path: list of tuples — either:
+      (timestamp_ns, bid, ask)                    — default qty=1000
+      (timestamp_ns, bid, ask, bid_qty, ask_qty)  — custom qty (for FOK tests)
     """
     engine = BacktestEngine(config=BacktestEngineConfig(logging=False))
     engine.add_venue(...)
@@ -508,8 +515,12 @@ def make_synthetic_engine(instrument, instrument_id, price_path, start_ns, end_n
 
     def data_gen():
         batch = []
-        for ts_ns, bid, ask in price_path:
-            deltas = make_book_snapshot(instrument, instrument_id, bid, ask, ts_ns)
+        for tick in price_path:
+            ts_ns, bid, ask = tick[0], tick[1], tick[2]
+            bid_qty = tick[3] if len(tick) > 3 else 1000
+            ask_qty = tick[4] if len(tick) > 4 else 1000
+            deltas = make_book_snapshot(instrument, instrument_id, bid, ask, ts_ns,
+                                        bid_qty=bid_qty, ask_qty=ask_qty)
             batch.append(deltas)
             if len(batch) >= 50:
                 batch.sort(key=lambda d: d.ts_init)
@@ -758,51 +769,55 @@ def _run_with_price_path(price_path, strategy_config, start_ns, end_ns,
 - **Assert:** Similar — exit fill exists at loss
 
 #### `test_fok_cancel_queues_retry`
-- **Strategy:** TickAlways with `buy_after_ticks=3, convergence_threshold=0.95, check_interval_minutes=1`
-- **Price path:** Entry → convergence → zero liquidity (FOK fails) → liquidity restored (retry succeeds)
+- **Strategy:** TickAlways with `buy_after_ticks=3, convergence_threshold=0.95, check_interval_minutes=1, trade_size=5`
+- **Price path:** Entry → convergence → insufficient bid depth (FOK SELL fails) → depth restored (retry succeeds)
   ```python
   ticks = []
   for i in range(120):
       ts = start_ns + i * 3_000_000_000  # 3s intervals (6 min total)
       if i < 10:
-          bid, ask = 0.50, 0.51          # stable — entry fills here
+          # stable — entry BUY fills at ask (ask_qty=1000 >> trade_size=5)
+          ticks.append((ts, 0.50, 0.51, 1000, 1000))  # (ts, bid, ask, bid_qty, ask_qty)
       elif i < 30:
-          bid, ask = 0.96, 0.97          # convergence triggers _trigger_exit()
+          # convergence triggers _trigger_exit() → FOK SELL at bid
+          # but bid_qty=1 < trade_size=5 → FOK SELL canceled
+          ticks.append((ts, 0.96, 0.97, 1, 1000))
       elif i < 60:
-          bid, ask = 0.96, 0.0           # sell side empty — FOK cancel
-          # NOTE: Use asks=[["0.97", "0"]] (zero qty) instead of empty asks
-          # transform_book_snapshot always needs at least a CLEAR action
+          # still insufficient bid depth — retries fail
+          ticks.append((ts, 0.96, 0.97, 1, 1000))
       else:
-          bid, ask = 0.96, 0.97          # liquidity restored — retry succeeds
-      ticks.append((ts, round(bid, 3), round(ask, 3)))
+          # bid depth restored — retry succeeds
+          ticks.append((ts, 0.96, 0.97, 1000, 1000))
+      # Note: use make_book_snapshot(..., bid_qty=qty, ask_qty=qty) for each tick
   ```
-- **Key detail:** Zero-liquidity representation. `transform_book_snapshot` with `asks=[]` generates a CLEAR-only snapshot (no ADD actions). This empties the matching engine's ask side. A FOK SELL order with no counterparty gets canceled. **Verification needed:** confirm that NautilusTrader's matching engine cancels FOK against an empty book (expected yes, but test during implementation).
+- **Key detail:** FOK SELL orders match against the BID side of the book. To make a FOK SELL cancel, we need insufficient BID depth (`bid_qty=1` with `trade_size=5`). The ask side is irrelevant for SELL order matching. Use `make_book_snapshot(..., bid_qty=1)` to create thin-bid snapshots.
 - **Expected flow:**
-  1. Ticks 0-9: Strategy buys at 0.51
-  2. Ticks 10-29: Convergence detected, `_trigger_exit()` submits FOK SELL → canceled (no ask liquidity)
+  1. Ticks 0-9: Strategy buys at ask=0.51 (ask_qty=1000 ≥ trade_size=5 → fills)
+  2. Ticks 10-29: Convergence detected, `_trigger_exit()` submits FOK SELL at bid=0.96, but bid_qty=1 < trade_size=5 → canceled
   3. `_pending_exit_retry` populated, `_exiting` cleared on next interval
-  4. Ticks 60+: Next convergence check re-triggers exit, FOK SELL succeeds (liquidity restored)
+  4. Ticks 60+: bid_qty restored to 1000. Next convergence re-triggers exit, FOK SELL fills at bid=0.96
 - **Assert:**
   - `strategy._orders_canceled >= 1` — at least one FOK cancel
   - `strategy._orders_filled >= 2` — entry BUY + exit SELL both filled
   - Position is closed (no open positions in cache)
 
 #### `test_fok_cancel_gives_up_after_3_retries`
-- **Strategy:** Same as above
-- **Price path:** Entry → convergence → **permanent** zero sell-side liquidity
+- **Strategy:** Same as above (trade_size=5)
+- **Price path:** Entry → convergence → **permanent** insufficient bid depth
   ```python
   ticks = []
   for i in range(200):
       ts = start_ns + i * 3_000_000_000  # 3s intervals (10 min total)
       if i < 10:
-          bid, ask = 0.50, 0.51          # stable — entry
+          # (ts, bid, ask, bid_qty, ask_qty)
+          ticks.append((ts, 0.50, 0.51, 1000, 1000))  # entry fills
       else:
-          bid, ask = 0.96, 0.0           # convergence + zero liquidity forever
-      ticks.append((ts, round(bid, 3), round(ask, 3)))
+          # convergence + permanent insufficient bid depth
+          ticks.append((ts, 0.96, 0.97, 1, 1000))     # bid_qty=1 < trade_size=5
   ```
 - **Expected flow:**
-  1. Entry BUY fills at tick ~3
-  2. Convergence triggers exit at tick ~10 → FOK SELL canceled
+  1. Entry BUY fills at tick ~3 (ask_qty=1000)
+  2. Convergence triggers exit at tick ~10 → FOK SELL canceled (bid_qty=1 < trade_size=5)
   3. Retry 1 on next interval → canceled
   4. Retry 2 → canceled
   5. Retry 3 → canceled → gives up, marks instrument as closed
@@ -1153,6 +1168,692 @@ class TestConvergenceExit:      # Group by exit type
 
 ---
 
+## 11. Real Strategy Integration Tests
+
+**The gap:** Existing Tier 2 tests verify lifecycle events via state inspection (`_orders_filled`, `_interval_count`) but never verify that the *outputs* are correct. A strategy could fire all the right callbacks and still produce wrong fills, broken PnL, or corrupt artifacts. These tests close that gap by running real strategies end-to-end through `run_backtest()` and asserting on actual files.
+
+**Data:** Bundled parquet + hardcoded market metadata (same as other Tier 2 tests). Deterministic: same data → same fills → same tearsheet every time.
+
+**Approach:** Monkeypatch `runner.engine.pmxt_data_generator` to read bundled parquet (same pattern as `test_runner.py`).
+
+**Prerequisite — `RunResult` extension:** Tests in sections 11.4, 12.4, 14.2-14.5 need access to the strategy and engine objects after `run_backtest()` completes. Add two fields to `RunResult` (2-line change to `engine.py`):
+
+```python
+@dataclass
+class RunResult:
+    run_id: str
+    config: ExperimentConfig
+    tearsheet: Tearsheet
+    orders_df: pd.DataFrame
+    fills_df: pd.DataFrame
+    positions_df: pd.DataFrame
+    elapsed_seconds: float = 0.0
+    success: bool = True
+    error: str | None = None
+    strategy: Any = None   # NEW — for test access to _log_buffer, _fill_records, etc.
+    engine: Any = None      # NEW — for cross-validation via engine.cache.positions()
+```
+
+In `run_backtest()`, after line 303 (`result = RunResult(...)`), add:
+```python
+result.strategy = strategy
+result.engine = engine
+```
+
+**Note:** `engine.dispose()` (line 332) invalidates `engine.cache`. Tests that need `result.engine.cache.positions()` must read positions BEFORE dispose. Move `engine.dispose()` after `return result`, or have tests call `result.engine.dispose()` explicitly. Alternative: populate `result.engine = engine` before dispose, and the cross-validation function captures positions eagerly during result construction.
+
+### 11.1 `test_momentum_drift_backtest_outputs`
+
+- **Strategy:** MomentumDrift (15m config: lookback=2, trade_size=5, entry_mid_low=0.51, entry_mid_high=0.80, convergence_threshold=0.85)
+- **Data:** Bundled parquet (1 hour, btc-updown-15m market with known drift)
+- **Setup:** `run_backtest()` with monkeypatched data generator, `results_dir=tmp_path`
+
+**Assertions on fills.csv:**
+- At least 2 fills (1 BUY + 1 SELL = 1 round trip minimum)
+- All fills on correct instrument_ids (match bundled market's condition_id)
+- BUY fills always precede paired SELL fills chronologically per instrument
+- All `order_type == "LIMIT"`, `time_in_force == "FOK"` (from orders.csv)
+- Fill prices in (0, 1) — valid prediction market range
+- BUY prices at ask level, SELL prices at bid level
+
+**Assertions on tearsheet.json:**
+- `total_pnl` matches manual BUY→SELL pair computation from fills (exact, no tolerance)
+- `num_trades == len(fills.csv rows)`
+- `num_round_trips == min(buys, sells)` where buys/sells are counts from fills.csv (not `floor(num_trades/2)`, which fails when fills are unpaired at end-of-data)
+- `win_rate` in [0.0, 1.0]
+- If `num_round_trips > 1`: `sharpe_ratio` is a finite number
+
+**Assertions on artifacts:**
+- `status.json`: `status == "completed"`, `total_pnl` matches tearsheet, `num_trades` matches
+- `metadata.json`: has `run_id`, `strategy_path` contains "momentum_drift", `data_hours` matches config
+- PNGs: `pnl_curve.png` and `trade_distribution.png` exist and are > 1KB (when round_trips > 0)
+- `orders.csv`: all rows are `FILLED` or `CANCELED`, zero `REJECTED`
+
+### 11.2 `test_tick_always_backtest_outputs`
+
+- **Strategy:** TickAlways (buy_after_ticks=3, sell_after_ticks=10, trade_size=5)
+- **Data:** Bundled parquet (1 hour)
+- **Setup:** `run_backtest()` with monkeypatched data generator
+
+**Assertions on fills.csv:**
+- Many fills (tick_always trades aggressively — expect 20+ round trips per instrument per hour)
+- BUY and SELL counts are equal per instrument (or off by 1 for end-of-data open positions)
+- Fills alternate BUY/SELL per instrument — no consecutive same-side fills
+- All fill quantities == 5.0 (trade_size)
+
+**Assertions on tearsheet.json:**
+- `num_trades > 40` (aggressive strategy)
+- `num_round_trips > 0`
+- `total_pnl` matches independent computation from fills
+
+**Assertions on status.json:**
+- `status == "completed"`
+- `elapsed_seconds > 0`
+- `total_pnl` and `num_trades` match tearsheet
+
+### 11.3 `test_timer_always_backtest_outputs`
+
+- **Strategy:** TimerAlways (check_interval_minutes=1, hold_periods=4, trade_size=5)
+- **Data:** Bundled parquet (1 hour)
+
+**Assertions on fills.csv:**
+- Fills exist (timer fires, buys on first interval with valid book, sells after 4 intervals)
+- BUY/SELL fills balanced per instrument
+- Fill timestamps are spaced at roughly 1-minute intervals (±30s tolerance for timer jitter and hold_periods)
+- All fill quantities == 5.0
+
+**Assertions on tearsheet.json:**
+- `num_round_trips > 0`
+- If `num_round_trips == 0` then `total_pnl == 0`
+
+### 11.4 `test_strategy_counter_consistency`
+
+Run each of the 3 strategies. After `run_backtest()`, verify internal counters match output artifacts via `result.strategy` and `result.engine` (see RunResult extension above):
+
+```python
+# For each strategy:
+strategy = result.strategy
+assert result.tearsheet.num_trades == len(result.fills_df)
+assert result.tearsheet.num_round_trips == strategy.round_trips
+assert strategy._orders_submitted >= strategy._orders_filled + strategy._orders_canceled
+assert len(strategy._fill_records) == strategy._orders_filled
+
+# Every instrument either closed or has open position at data end
+for iid in strategy._instrument_ids:
+    has_open = bool(result.engine.cache.positions_open(instrument_id=iid))
+    is_closed = iid in strategy._closed
+    assert has_open or is_closed or strategy._orders_filled == 0
+```
+
+### 11.5 `test_all_artifacts_present_and_valid`
+
+After any successful `run_backtest()` with fills:
+
+```python
+# Required files
+assert (tmp_path / "tearsheet.json").exists()
+assert (tmp_path / "status.json").exists()
+assert (tmp_path / "metadata.json").exists()
+assert (tmp_path / "fills.csv").exists()
+assert (tmp_path / "orders.csv").exists()
+
+# PNGs (only when round_trips > 0)
+if result.tearsheet.num_round_trips > 0:
+    assert (tmp_path / "pnl_curve.png").exists()
+    assert (tmp_path / "pnl_curve.png").stat().st_size > 1000
+    assert (tmp_path / "trade_distribution.png").exists()
+    assert (tmp_path / "trade_distribution.png").stat().st_size > 1000
+
+# positions.csv only when positions exist
+if result.tearsheet.num_positions > 0:
+    assert (tmp_path / "positions.csv").exists()
+    # Position timeline and instrument lifecycle PNGs
+    assert (tmp_path / "position_timeline.png").exists()
+    assert (tmp_path / "instrument_lifecycle.png").exists()
+
+# Tearsheet JSON matches RunResult
+import json
+with open(tmp_path / "tearsheet.json") as f:
+    ts_json = json.load(f)
+assert ts_json["total_pnl"] == result.tearsheet.total_pnl
+assert ts_json["num_trades"] == result.tearsheet.num_trades
+assert ts_json["num_round_trips"] == result.tearsheet.num_round_trips
+```
+
+---
+
+## 12. Log Verification Strategy
+
+### 12.1 Investigation Results
+
+**`self.log` is NOT Python's `logging.Logger`.** It is NautilusTrader's custom `Logger` class (Cython/pyo3), defined in `nautilus_trader/common/component.pyx`. Methods: `.info()`, `.warning()`, `.error()`, `.debug()`. Output routes through Rust's logging system directly to file descriptors, bypassing Python's `logging` module entirely.
+
+**`caplog` cannot capture `self.log.info()` output.** The pytest `caplog` fixture hooks into Python's `logging` module. Since NautilusTrader's Logger is completely separate, `caplog` sees nothing.
+
+### 12.2 Chosen Approach: State Buffer Pattern
+
+Add `_log_buffer: list[dict]` to `PolymarketStrategy` that captures structured log events at key lifecycle points. This mirrors the existing `_fill_records` pattern — strategies already track fills in-memory to avoid cache eviction. Same approach for log events.
+
+**Implementation (base class):**
+
+```python
+# In PolymarketStrategy.__init__():
+self._log_buffer: list[dict] = []
+
+# Helper method:
+def _log_event(self, event_type: str, **kwargs):
+    """Append structured event to log buffer for test verification."""
+    self._log_buffer.append({"event": event_type, **kwargs})
+```
+
+### 12.3 Instrumentation Points
+
+**Base class (`PolymarketStrategy`) — instrument these existing log lines:**
+
+| Location (base.py) | Event Type | Fields | Existing log line prefix |
+|---------------------|-----------|--------|--------------------------|
+| `on_start()` L154 | `"on_start"` | `instrument_count`, `interval_minutes` | `"on_start: N instruments..."` |
+| `_on_heartbeat()` L338 | `"heartbeat"` | `fills`, `ticks`, `sim_ts` | `"heartbeat: fills=N ticks=M"` |
+| `on_order_filled()` L413 | `"filled"` | `instrument_id`, `side`, `qty`, `price`, `slug` | `"FILLED: label SIDE..."` |
+| `on_order_canceled()` L433 | `"canceled"` | `instrument_id`, `slug` | `"CANCELED: label"` |
+| `on_order_rejected()` L455 | `"rejected"` | `instrument_id`, `reason` | `"REJECTED: label reason=..."` |
+| `_trigger_exit()` L534 | `"exit"` | `instrument_id`, `reason`, `unrealized_pnl` | `"EXIT [reason]: label..."` |
+| `_on_interval_event()` L324 | `"on_interval"` | `interval_count`, `active`, `exiting`, `closed` | `"on_interval #N: ..."` |
+| FOK retry L445 | `"fok_retry"` | `instrument_id`, `retry_count` | `"EXIT FOK failed..."` |
+| FOK give up L447 | `"fok_give_up"` | `instrument_id` | `"EXIT FOK failed 3x..."` |
+
+**MomentumDrift — additional instrumentation:**
+
+| Location (momentum_drift.py) | Event Type | Fields | Existing log line prefix |
+|-------------------------------|-----------|--------|--------------------------|
+| `_check_entry()` L150 | `"entry"` | `instrument_id`, `outcome`, `mid`, `drift`, `spread`, `ask` | `"ENTRY: label out=..."` |
+| `_manage_exit()` L210 | `"strategy_exit"` | `instrument_id`, `reason`, `mid`, `entry_mid`, `gain`, `peak`, `drawdown`, `hold`, `est_pnl` | `"EXIT [reason]: label mid=..."` |
+
+**TickAlways — additional instrumentation:**
+
+| Location (tick_always.py) | Event Type | Fields | Existing log line prefix |
+|---------------------------|-----------|--------|--------------------------|
+| `_is_tradeable()` L59 | `"active_window"` | `slug`, `active`, `window_start`, `now` | `"active_window: slug active=..."` |
+
+### 12.4 Log Assertion Test Designs
+
+All tests use `run_backtest()` and access `result.strategy._log_buffer` (see RunResult extension in Section 11).
+
+#### `test_momentum_drift_logs_entry_and_exit`
+- **Strategy:** MomentumDrift with bundled data
+- **After `run_backtest()`:**
+```python
+strategy = result.strategy
+events = strategy._log_buffer
+
+# on_start fired exactly once with correct instrument count
+start_events = [e for e in events if e["event"] == "on_start"]
+assert len(start_events) == 1
+assert start_events[0]["instrument_count"] == len(bundled_instrument_ids)
+
+# ENTRY events logged with valid momentum fields
+entries = [e for e in events if e["event"] == "entry"]
+assert len(entries) > 0, "Strategy must log at least one ENTRY"
+for entry in entries:
+    assert 0 < entry["mid"] < 1
+    assert entry["drift"] > 0  # positive drift = momentum signal
+    assert entry["spread"] <= strategy._max_spread
+    assert strategy._entry_mid_low <= entry["mid"] <= strategy._entry_mid_high
+
+# EXIT events logged with correct reasons
+exits = [e for e in events if e["event"] == "strategy_exit"]
+assert len(exits) >= len(entries), "Every entry should have an exit"
+for ex in exits:
+    assert ex["reason"] in ("take_profit", "stop_loss", "reversal")
+    assert "est_pnl" in ex
+    assert "hold" in ex and ex["hold"] >= strategy._min_hold
+```
+
+#### `test_base_class_logs_fills_with_slug`
+- **Strategy:** TickAlways with bundled data
+- **After `run_backtest()`:**
+```python
+strategy = result.strategy
+events = strategy._log_buffer
+
+# Every fill logged with non-empty slug label
+fills = [e for e in events if e["event"] == "filled"]
+assert len(fills) == strategy._orders_filled
+for f in fills:
+    assert f["slug"] != "", "Fill must have slug label"
+    assert f["side"] in ("BUY", "SELL")
+    assert f["qty"] > 0
+    assert 0 < f["price"] < 1
+```
+
+#### `test_heartbeat_logged`
+- **Strategy:** TickAlways with heartbeat enabled (1 hour of data → at least 1 heartbeat)
+- **After `run_backtest()`:**
+```python
+heartbeats = [e for e in result.strategy._log_buffer if e["event"] == "heartbeat"]
+assert len(heartbeats) >= 1
+# Last heartbeat reflects final state
+assert heartbeats[-1]["fills"] == strategy._orders_filled
+assert heartbeats[-1]["ticks"] > 0
+```
+
+#### `test_interval_logged_periodically`
+- **Strategy:** TimerAlways (check_interval_minutes=1, 1 hour of data)
+- **After `run_backtest()`:**
+```python
+intervals = [e for e in result.strategy._log_buffer if e["event"] == "on_interval"]
+# on_interval is logged every 10th interval (line 322: if _interval_count % 10 == 1)
+assert len(intervals) >= 5  # ~60 intervals / 10 = 6 logged
+assert intervals[0]["interval_count"] == 1
+assert intervals[-1]["interval_count"] >= 50
+```
+
+### 12.5 Implementation Cost
+
+- **Base class:** ~25 lines (init + `_log_event` method + 8 instrumentation calls alongside existing `self.log.info()` calls)
+- **MomentumDrift:** ~6 lines (2 instrumentation calls)
+- **TickAlways:** ~4 lines (1 instrumentation call)
+- **Performance:** Negligible — appending dicts to a list, same as `_fill_records`
+- **No production impact:** Events are already being logged to Rust; `_log_buffer` is additive
+
+### 12.6 Alternative Considered and Rejected
+
+**Option C (log to temp file):** NautilusTrader's `LoggingConfig` can redirect to a file, but parsing unstructured log output is fragile — Rust-generated timestamps and module paths change across versions. Structured `_log_buffer` is version-independent and testable.
+
+---
+
+## 13. Paper Trading Property Tests
+
+Paper trading uses live WebSocket data (non-deterministic). Exact fill counts and prices vary per run. These tests assert on **invariants** — properties that must hold regardless of market conditions.
+
+**Target markets:** btc-updown-15m (high frequency, always active, public WebSocket).
+**Duration:** 60-90 seconds (enough for data flow + a few fills).
+**Tier:** 3 (`@pytest.mark.network`).
+
+### 13.1 `test_paper_structural_correctness`
+
+- **Strategy:** TickAlways (buy_after_ticks=3, sell_after_ticks=10, active_window_only=False)
+- **Config:** paper mode, btc-updown-15m universe, duration=90s
+
+**Invariant assertions:**
+```python
+assert strategy._tick_count_total > 0, "WebSocket data must arrive"
+assert strategy._orders_submitted > 0, "Strategy must trade"
+assert strategy._orders_filled > 0, "At least one fill"
+assert len(strategy._instrument_ids) >= 2, "At least 1 market = 2 tokens"
+assert len(strategy._fill_records) == strategy._orders_filled, "Fill tracking consistent"
+```
+
+### 13.2 `test_paper_fill_invariants`
+
+- **Strategy:** TickAlways, paper mode, 90s
+
+**Invariant assertions on `strategy._fill_records`:**
+```python
+for fill in strategy._fill_records:
+    assert 0.0 < fill["price"] < 1.0, "Valid prediction market price"
+    assert fill["qty"] > 0
+    assert fill["side"] in ("BUY", "SELL")
+    assert fill["instrument_id"] != ""
+    assert fill["slug"] != "", "Metadata hydration worked"
+
+# BUY/SELL balance: short-sell guard should keep ratio reasonable
+buys = sum(1 for f in fills if f["side"] == "BUY")
+sells = sum(1 for f in fills if f["side"] == "SELL")
+if buys > 0 and sells > 0:
+    ratio = max(buys, sells) / min(buys, sells)
+    assert ratio < 3.0, f"BUY/SELL ratio {ratio} is too imbalanced"
+```
+
+### 13.3 `test_paper_lifecycle_timing`
+
+- **Strategy:** TickAlways with heartbeat enabled, paper mode, 90s
+
+**Invariant assertions:**
+```python
+# Data flow rate
+assert strategy._tick_count_total > 50, "Expected >1 tick/sec for btc-updown-15m"
+
+# Heartbeat fired (run > 60s, heartbeat interval = 60s)
+# Check via status.json or _log_buffer heartbeat events
+status_path = results_dir / "status.json"
+assert status_path.exists()
+with open(status_path) as f:
+    status = json.load(f)
+assert status["status"] == "completed"
+assert status["fills"] >= 0
+assert status["ticks"] > 0
+
+# Verify node stopped cleanly (no zombie check)
+# The test function returning normally proves node.dispose() completed
+```
+
+### 13.4 `test_paper_active_window_invariants`
+
+- **Strategy:** TickAlways with `active_window_only=True`, paper mode, 90s
+
+**Invariant assertions:**
+```python
+import time
+now = int(time.time())
+active_window_start = now - (now % 900)  # current 15-min window
+previous_window_start = active_window_start - 900  # allow in-flight from prior
+
+for fill in strategy._fill_records:
+    # Extract slug timestamp from instrument_id or fill metadata
+    slug = fill.get("slug", "")
+    meta = strategy._market_meta.get(InstrumentId.from_str(fill["instrument_id"]))
+    if meta:
+        slug_ts = meta.slug_timestamp()
+        if slug_ts is not None:
+            # Fill must be on an active or just-expired window
+            assert slug_ts >= previous_window_start, (
+                f"Fill on window {slug_ts}, but active window starts at {active_window_start}"
+            )
+```
+
+### 13.5 `test_paper_artifacts_generated`
+
+- **Config:** paper mode, 90s
+
+**Invariant assertions:**
+```python
+assert (results_dir / "status.json").exists()
+if strategy._orders_filled > 0:
+    assert (results_dir / "fills.csv").exists()
+    # fills.csv row count matches
+    import csv
+    with open(results_dir / "fills.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == strategy._orders_filled
+
+    # At least one PNG generated
+    pngs = list(results_dir.glob("*.png"))
+    assert len(pngs) >= 1
+```
+
+### 13.6 Non-Determinism Tolerance Table
+
+| Property | Why it holds | Tolerance |
+|----------|-------------|-----------|
+| Fill prices in (0, 1) | Prediction markets settle at 0 or 1; mid-life prices are fractional | Exact — any price outside this range is a bug |
+| BUY ≈ SELL count | Short-sell guard + on_position_closed cleanup | Within 3:1 ratio |
+| Ticks > 50 in 90s | btc-updown-15m has ~200 ticks/sec across all instruments | Conservative minimum |
+| Heartbeat fires | 60s interval, 90s run | At least 1 |
+| Slugs non-empty | Metadata hydration runs on_start before any trading | All fills must have slug |
+| Active window fills | `_is_tradeable()` checks wall clock against slug timestamp | Current + previous window allowed |
+
+---
+
+## 14. Tearsheet Cross-Validation Tests
+
+Run a strategy, then independently compute PnL from the fills CSV and verify it matches the tearsheet. Catches: fill pairing bugs, rounding errors, missing fills (cache eviction), incorrect win_rate computation.
+
+### 14.1 Cross-Validation Algorithms
+
+Two genuinely independent approaches, each using a **different code path** and **different data source** than `tearsheet.py::_compute_round_trip_pnls()`.
+
+#### Approach A: Position-Based (from NautilusTrader engine)
+
+Uses NautilusTrader's internal `Position` accounting — a completely separate code path implemented in Cython/C++. The engine tracks positions independently of our Python fills-pairing logic.
+
+```python
+def _compute_pnl_from_positions(engine, instrument_ids: list) -> tuple[float, int]:
+    """Compute PnL from NautilusTrader Position objects.
+
+    Completely different code path from tearsheet.py:
+    - Data source: engine.cache.positions() (Cython position accounting)
+    - Algorithm: NautilusTrader's internal realized_pnl tracking
+    - vs tearsheet: fills_df DataFrame → sequential BUY/SELL pairing in Python
+    """
+    total_pnl = 0.0
+    round_trips = 0
+    for iid in instrument_ids:
+        for pos in engine.cache.positions(instrument_id=iid):
+            if pos.is_closed:
+                total_pnl += float(pos.realized_pnl)
+                round_trips += 1
+    return round(total_pnl, 6), round_trips
+```
+
+**Known limitation:** In NETTING mode, NautilusTrader maintains one Position object per instrument. When a position is closed and reopened (re-entry), `realized_pnl` accumulates across all cycles. However, the `positions()` method may return the single NETTING position (not one per round trip), so `round_trips` from this method may differ from tearsheet's count. The PnL total should still match for fully closed instruments.
+
+**Assertion pattern:**
+```python
+pos_pnl, pos_rt = _compute_pnl_from_positions(result.engine, instrument_ids)
+# PnL should agree for instruments where all positions are closed
+assert abs(pos_pnl - result.tearsheet.total_pnl) < 0.01, \
+    f"Position PnL {pos_pnl} != tearsheet PnL {result.tearsheet.total_pnl}"
+```
+
+If position-based and tearsheet PnL **disagree**, that's exactly what cross-validation should catch — it means either the fills-pairing logic or the engine's position tracking has a bug.
+
+#### Approach B: Fill-Records with FIFO Queue (from strategy memory)
+
+Uses `strategy._fill_records` (populated by `on_order_filled()` callback) — a different data collection path than `fills_df` (populated by `ReportProvider.generate_fills_report(engine.cache.orders())`).
+
+```python
+def _compute_pnl_from_fill_records(fill_records: list[dict]) -> tuple[float, int]:
+    """Compute PnL from strategy._fill_records using FIFO deque.
+
+    Different from tearsheet.py in three ways:
+    1. Data source: on_order_filled() callback (strategy memory)
+       vs ReportProvider.generate_fills_report(engine.cache.orders())
+    2. Data structure: list[dict] with 'price'/'qty'/'side' keys
+       vs DataFrame with 'last_px'/'last_qty'/'order_side' columns
+    3. Algorithm: collections.deque FIFO queue
+       vs pending_buy pointer with sequential iteration
+
+    Catches: cache eviction bugs, ReportProvider parsing bugs,
+    fills_df missing rows, field name mismatches.
+    """
+    from collections import deque
+
+    queues: dict[str, deque] = {}  # instrument_id -> deque of (price, qty)
+    pnls: list[float] = []
+
+    for record in sorted(fill_records, key=lambda r: r["timestamp"]):
+        iid = record["instrument_id"]
+        if iid not in queues:
+            queues[iid] = deque()
+
+        if record["side"] == "BUY":
+            queues[iid].append((record["price"], record["qty"]))
+        elif record["side"] == "SELL" and queues[iid]:
+            buy_price, buy_qty = queues[iid].popleft()
+            trade_qty = min(record["qty"], buy_qty)
+            pnls.append(round((record["price"] - buy_price) * trade_qty, 6))
+
+    return pnls, len(pnls)
+```
+
+**Assertion pattern:**
+```python
+fr_pnls, fr_rt = _compute_pnl_from_fill_records(result.strategy._fill_records)
+# Must agree exactly — same fills, different collection path
+assert round(sum(fr_pnls), 6) == result.tearsheet.total_pnl
+assert fr_rt == result.tearsheet.num_round_trips
+```
+
+#### Why two approaches?
+
+| Property | Approach A (positions) | Approach B (fill records) |
+|----------|----------------------|--------------------------|
+| Code path | Cython/C++ engine | Python callback memory |
+| Algorithm | NautilusTrader accounting | FIFO deque pairing |
+| Data source | `engine.cache.positions()` | `strategy._fill_records` |
+| Catches | Fills-pairing logic bugs | Cache eviction, report bugs |
+| Known limitation | NETTING round_trip count | None (should agree exactly) |
+
+Using both: if tearsheet, positions, and fill-records all agree → high confidence. If any two disagree → real bug found. This is genuine cross-validation, not a determinism check.
+
+### 14.2 `test_tearsheet_cross_validation_tick_always`
+
+- **Strategy:** TickAlways with bundled data
+- **After `run_backtest()`:**
+
+```python
+# --- Approach A: Position-based cross-validation ---
+pos_pnl, pos_rt = _compute_pnl_from_positions(
+    result.engine,
+    [InstrumentId.from_str(s) for s in result.strategy._instrument_ids],
+)
+assert abs(pos_pnl - result.tearsheet.total_pnl) < 0.01, \
+    f"Position PnL {pos_pnl} != tearsheet {result.tearsheet.total_pnl}"
+
+# --- Approach B: Fill-records cross-validation ---
+fr_pnls, fr_rt = _compute_pnl_from_fill_records(result.strategy._fill_records)
+assert round(sum(fr_pnls), 6) == result.tearsheet.total_pnl
+assert fr_rt == result.tearsheet.num_round_trips
+
+# --- Derived metrics ---
+if fr_rt > 0:
+    manual_wr = len([p for p in fr_pnls if p > 0]) / fr_rt
+    assert round(manual_wr, 4) == result.tearsheet.win_rate
+    manual_avg = round(sum(fr_pnls) / fr_rt, 6)
+    assert manual_avg == result.tearsheet.avg_trade_pnl
+```
+
+### 14.3 `test_tearsheet_cross_validation_momentum_drift`
+
+Both cross-validation approaches applied to MomentumDrift results. Additional check:
+
+```python
+# Strategy's own round_trip counter must match
+assert result.tearsheet.num_round_trips == result.strategy.round_trips, \
+    "Strategy's round_trip counter must match tearsheet"
+
+# Position-based PnL check
+pos_pnl, _ = _compute_pnl_from_positions(result.engine, instrument_ids)
+assert abs(pos_pnl - result.tearsheet.total_pnl) < 0.01
+
+# Fill-records PnL check
+fr_pnls, fr_rt = _compute_pnl_from_fill_records(result.strategy._fill_records)
+assert round(sum(fr_pnls), 6) == result.tearsheet.total_pnl
+```
+
+### 14.4 `test_tearsheet_cross_validation_timer_always`
+
+Both approaches applied to TimerAlways results. Additional check:
+
+```python
+# Timer fills should be time-ordered per instrument
+for _iid, group in result.fills_df.groupby("instrument_id"):
+    timestamps = group["ts_event"].tolist()
+    assert timestamps == sorted(timestamps), "Fills must be time-ordered per instrument"
+
+# Cross-validate
+fr_pnls, fr_rt = _compute_pnl_from_fill_records(result.strategy._fill_records)
+assert round(sum(fr_pnls), 6) == result.tearsheet.total_pnl
+assert fr_rt == result.tearsheet.num_round_trips
+```
+
+### 14.5 `test_fill_records_match_fills_csv`
+
+After `run_backtest()`, verify in-strategy fill tracking matches engine output. This tests the **data collection path** — `on_order_filled()` callback vs `ReportProvider.generate_fills_report()`.
+
+```python
+assert len(result.strategy._fill_records) == len(result.fills_df), \
+    "In-strategy fill records must match engine fills"
+
+for i, record in enumerate(result.strategy._fill_records):
+    row = result.fills_df.iloc[i] if i < len(result.fills_df) else None
+    if row is not None:
+        assert record["side"] == str(row["order_side"])
+        assert abs(record["price"] - float(str(row["last_px"]))) < 1e-6
+```
+
+---
+
+## 15. Updated Behavior Coverage Matrix (Additions)
+
+New tests from sections 11-14 mapped to BEHAVIORS.md items:
+
+### Real Strategy Outputs (New)
+
+| Behavior | New Test | Section |
+|----------|----------|---------|
+| Fills correctness | `test_*_backtest_outputs` (3 strategies) | 11.1-11.3 |
+| Tearsheet accuracy vs fills | `test_tearsheet_cross_validation_*` (3 strategies) | 14.2-14.4 |
+| Artifact completeness | `test_all_artifacts_present_and_valid` | 11.5 |
+| Counter consistency | `test_strategy_counter_consistency` | 11.4 |
+| Fill records vs CSV | `test_fill_records_match_fills_csv` | 14.5 |
+
+### Log Verification (New)
+
+| Behavior | New Test | Section |
+|----------|----------|---------|
+| Strategy logging (ENTRY/EXIT) | `test_momentum_drift_logs_entry_and_exit` | 12.4 |
+| Fill logging with slug | `test_base_class_logs_fills_with_slug` | 12.4 |
+| Heartbeat logging | `test_heartbeat_logged` | 12.4 |
+| Interval logging | `test_interval_logged_periodically` | 12.4 |
+
+### Paper Trading Properties (New)
+
+| Behavior | New Test | Section |
+|----------|----------|---------|
+| WebSocket data flow | `test_paper_structural_correctness` | 13.1 |
+| Fill invariants (price, qty, side) | `test_paper_fill_invariants` | 13.2 |
+| Lifecycle timing | `test_paper_lifecycle_timing` | 13.3 |
+| Active window filtering (live) | `test_paper_active_window_invariants` | 13.4 |
+| Paper artifact generation | `test_paper_artifacts_generated` | 13.5 |
+
+---
+
+## 16. Updated Test Counts and Timing
+
+### New tests from sections 11-14
+
+| Section | File | New Tests | Estimated Time |
+|---------|------|-----------|---------------|
+| 11 (Real Strategy) | `test_real_strategy.py` | 5 | < 30s (3 backtests × ~8s each + 2 meta-tests) |
+| 12 (Log Verification) | `test_log_verification.py` | 4 | < 20s (4 backtests × ~5s each) |
+| 13 (Paper Trading) | `test_paper_properties.py` | 5 | ~2 min (90s live + overhead) |
+| 14 (Tearsheet Cross-Val) | `test_tearsheet_cross_validation.py` | 5 | < 20s (3 backtests + 2 meta-tests) |
+| **Total new** | | **19** | |
+
+### Revised total counts
+
+| Tier | File | Tests | Time |
+|------|------|-------|------|
+| 1 | test_unit.py | ~11 | < 0.5s |
+| 1 | test_tearsheet.py | 16 | < 0.1s |
+| 1 | test_transformer.py | 9 | < 0.1s |
+| 1 | test_universe.py | 2 | < 0.1s |
+| 1 | test_mlflow_logger.py | 8 | < 1s |
+| 1/2 | test_discovery.py | 15 | < 2s |
+| 2 | test_lifecycle.py | ~13 | < 15s |
+| 2 | test_exits.py | ~8 | < 10s |
+| 2 | test_orders.py | ~3 | < 3s |
+| 2 | test_artifacts_integration.py | ~5 | < 2s |
+| 2 | test_runner.py | ~3 | < 5s |
+| 2 | test_trading_backtest.py | 3 | < 5s |
+| 2 | **test_real_strategy.py** | **5** | **< 30s** |
+| 2 | **test_log_verification.py** | **4** | **< 20s** |
+| 2 | **test_tearsheet_cross_validation.py** | **5** | **< 20s** |
+| **Fast total (Tier 1+2)** | | **~110** | **< 2 min** |
+| 3 | test_pmxt_reader.py | 4 | ~2 min |
+| 3 | test_gamma.py | 17 | ~1 min |
+| 3 | test_integration.py | 1 | ~3 min |
+| 3 | **test_paper_properties.py** | **5** | **~2 min** |
+| **Full total** | | **~137** | **< 10 min** |
+
+**Note on timing:** The original fast suite target was < 40s, which assumed each backtest takes ~0.5-1.5s. The real strategy tests run full backtests with `run_backtest()` — these include artifact generation (PNGs via matplotlib) and tearsheet computation, so they run ~5-8s each. The revised fast suite target is < 2 min, still a 3× improvement over the current 6 min (which includes network I/O).
+
+### Updated improvement table
+
+| Metric | Before | After (original plan) | After (with sections 11-14) |
+|--------|--------|----------------------|---------------------------|
+| Total tests | 81 | ~118 | ~137 |
+| Fast suite time | ~6 min | < 40s | < 2 min |
+| BEHAVIORS.md coverage | ~30% | ~95% | ~98% |
+| Output verification tests | 0 | 0 | 14 (fills, tearsheet, artifacts) |
+| Log verification tests | 0 | 0 | 4 |
+| Paper property tests | 0 | 0 | 5 |
+| Tearsheet cross-validation | 0 | 0 | 5 |
+
+---
+
 ## Appendix A: Synthetic Price Path Examples
 
 ### Convergence path (mid → 1.0)
@@ -1203,36 +1904,35 @@ for i in range(50):
 ticks = [(start_ns + i * 1_000_000_000, 0.50, 0.51) for i in range(3600)]
 ```
 
-### FOK retry path (entry → convergence → zero liquidity → restored)
+### FOK retry path (entry → convergence → insufficient bid depth → restored)
 ```python
-# 120 ticks over 6 minutes at 3s intervals
-# Phase 1: stable entry, Phase 2: convergence, Phase 3: empty book, Phase 4: restored
+# 120 ticks over 6 minutes at 3s intervals (trade_size=5)
+# Phase 1: stable entry, Phase 2: convergence + thin bids, Phase 3: thin bids, Phase 4: depth restored
+# Each tick: (ts, bid, ask, bid_qty, ask_qty)
 ticks = []
 for i in range(120):
     ts = start_ns + i * 3_000_000_000
     if i < 10:
-        bid, ask = 0.50, 0.51          # entry fills
+        ticks.append((ts, 0.50, 0.51, 1000, 1000))   # BUY fills at ask (ask_qty >> trade_size)
     elif i < 30:
-        bid, ask = 0.96, 0.97          # convergence triggers exit
+        ticks.append((ts, 0.96, 0.97, 1, 1000))       # convergence → FOK SELL at bid, but bid_qty=1 < trade_size=5 → canceled
     elif i < 60:
-        bid, ask = 0.96, 0.0           # sell-side empty — FOK SELL cancels
+        ticks.append((ts, 0.96, 0.97, 1, 1000))       # still thin bids — retries fail
     else:
-        bid, ask = 0.96, 0.97          # liquidity restored — retry succeeds
-    ticks.append((ts, round(bid, 3), round(ask, 3)))
+        ticks.append((ts, 0.96, 0.97, 1000, 1000))    # bid depth restored — retry succeeds
 ```
-**Zero-liquidity encoding:** When `ask=0.0`, `make_book_snapshot` should use `asks=[["0.97", "0"]]` (zero quantity) instead of `asks=[]`. This ensures `transform_book_snapshot` generates a valid CLEAR + ADD(qty=0) sequence. The matching engine will see no executable liquidity and cancel the FOK order. Verify during implementation that this produces the expected cancel event.
+**Insufficient bid depth encoding:** FOK SELL orders match against the BID side of the book. When `bid_qty=1` and `trade_size=5`, the FOK SELL cannot fill its full quantity and gets canceled. Use `make_book_snapshot(..., bid_qty=1)` to create thin-bid snapshots. The ask side is irrelevant for SELL order matching.
 
 ### FOK permanent failure path (gives up after 3 retries)
 ```python
-# 200 ticks over 10 minutes — zero sell-side after entry
+# 200 ticks over 10 minutes — insufficient bid depth after entry (trade_size=5)
 ticks = []
 for i in range(200):
     ts = start_ns + i * 3_000_000_000
     if i < 10:
-        bid, ask = 0.50, 0.51          # entry
+        ticks.append((ts, 0.50, 0.51, 1000, 1000))    # entry fills
     else:
-        bid, ask = 0.96, 0.0           # convergence + permanent zero liquidity
-    ticks.append((ts, round(bid, 3), round(ask, 3)))
+        ticks.append((ts, 0.96, 0.97, 1, 1000))       # convergence + permanent thin bids
 ```
 
 ## Appendix B: Key Risks and Mitigations
@@ -1242,5 +1942,5 @@ for i in range(200):
 | Bundled data becomes stale (PMXT format changes) | Tier 2 tests fail | Regenerate with script. Format hasn't changed in months. |
 | Synthetic data doesn't match real engine behavior | False passes | Validate synthetic tests against one real-data test |
 | NautilusTrader internal API changes break tests | Test failures | Pin nautilus_trader version. Tests use public API where possible. |
-| FOK retry test is flaky (timing-dependent) | Intermittent failures | Use deterministic synthetic data with exact liquidity control |
+| FOK retry test is flaky (timing-dependent) | Intermittent failures | Use deterministic synthetic data with insufficient bid depth (bid_qty < trade_size) |
 | Log capture doesn't work with NautilusTrader's Rust logger | Can't verify log messages | Use state inspection (counters, sets) instead of log parsing |
