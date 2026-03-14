@@ -78,13 +78,15 @@ Fires on every orderbook update. High frequency — hundreds to thousands per in
 **Evidence (backtest):** 432 ticks/2h. Both singular and plural handlers working.
 **Evidence (paper):** 20,390-39,187 ticks in 120s. Real-time BTC price data flowing through callbacks.
 
-### Exit Lifecycle — PARTIAL
+### Exit Lifecycle — PASS
 Base class handles exits automatically:
 - **Resolution timer** — PASS: exits N seconds before instrument expiration. Verified with test_resolution.yml.
 - **Convergence** — PASS: exits when mid-price approaches 0 or 1. Verified with test_convergence.yml (34 exits).
-- **Take-profit / Stop-loss** — UNVERIFIED: needs volatile data producing PnL movement.
+- **Take-profit / Stop-loss** — PASS: verified via MomentumDrift strategy loop (3 iterations).
 - **End-of-data** — PASS: exits all positions 60s before data window ends. Verified in tick_always 2h run.
 All exits use FOK limit orders at best bid/ask.
+
+**TP/SL Evidence (strategy loop, 2026-03-14):** 11 take_profit exits, 5 stop_loss exits, 4 convergence exits across multiple runs. Example: `EXIT [take_profit]: mid=0.830 entry=0.520 gain=+0.310 peak=0.830`. Best run: +14.0 PnL, 100% win rate (run 485d0017).
 
 ---
 
@@ -148,6 +150,13 @@ Cross-validated 3/3 markets against Gamma API.
 
 ### Test Strategies — PASS
 `tick_always` and `timer_always` are baseline test harnesses. Both produce fills on real data.
+
+### MomentumDrift Strategy — PASS
+First real strategy with signal logic. Timer-based, buys tokens in early drift (0.52-0.65 mid), exits via TP/SL/reversal. 3-iteration dev loop produced:
+- Best single run: +14.0 PnL, 1 RT, 100% WR (run 485d0017)
+- Best depth run: +10.0 PnL, 8 RT, 62.5% WR, Sharpe 2.31, PF 1.45 (run a8e49532)
+- OOS configs created: 4h OOS (3 windows), 15m IS + OOS (4 configs)
+- Exercises: entry filters, monotonic drift check, min_hold, TP/SL/reversal exits, condition lock, FOK cancel handling
 
 ### Unit Tests — PASS
 81/81 tests pass (5:25).

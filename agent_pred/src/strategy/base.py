@@ -108,6 +108,8 @@ class PolymarketStrategy(Strategy):
         self._data_ended = False  # Set when end-of-data exit fires; blocks new entries
         self._exiting: set[InstrumentId] = set()
         self._closed: set[InstrumentId] = set()
+        self._exit_retries: dict[InstrumentId, int] = {}  # FOK exit failure counter
+        self._pending_exit_retry: set[InstrumentId] = set()  # Retry on next interval
         self._subscribed_ids: set[InstrumentId] = set()  # Track all subscribed instruments
 
         # Market metadata map (Block 1)
@@ -307,6 +309,14 @@ class PolymarketStrategy(Strategy):
 
     def _on_interval_event(self, event: TimeEvent) -> None:
         """Dispatch interval timer events to subclass on_interval()."""
+        # Process pending exit retries (queued by failed FOK exits)
+        if self._pending_exit_retry:
+            retrying = list(self._pending_exit_retry)
+            self._pending_exit_retry.clear()
+            for iid in retrying:
+                self._exiting.discard(iid)
+            self.log.info(f"Retrying {len(retrying)} failed exits")
+
         if not self._data_ended:
             self._interval_count += 1
             if self._interval_count % 10 == 1:
@@ -448,12 +458,26 @@ class PolymarketStrategy(Strategy):
 
     def on_order_canceled(self, event: OrderCanceled) -> None:
         self._orders_canceled += 1
-        meta = self._market_meta.get(event.instrument_id)
-        label = meta.label if meta else str(event.instrument_id)
+        iid = event.instrument_id
+        meta = self._market_meta.get(iid)
+        label = meta.label if meta else str(iid)
         self.log.info(
             f"CANCELED: {label} "
             f"(canceled={self._orders_canceled}/{self._orders_submitted})"
         )
+        # If an exit FOK failed (instrument in _exiting but still has open position),
+        # mark for retry on the next interval (not immediately — avoids infinite loops
+        # from tick-level convergence checks firing repeatedly).
+        if iid in self._exiting and self.cache.positions_open(instrument_id=iid):
+            retries = self._exit_retries.get(iid, 0) + 1
+            self._exit_retries[iid] = retries
+            if retries <= 3:
+                self._pending_exit_retry.add(iid)
+                self.log.info(f"EXIT FOK failed for {label} — queued retry {retries}/3")
+            else:
+                self.log.warning(f"EXIT FOK failed 3x for {label} — giving up")
+                self._closed.add(iid)
+                self._exiting.discard(iid)
 
     def on_order_rejected(self, event: OrderRejected) -> None:
         self._orders_rejected += 1

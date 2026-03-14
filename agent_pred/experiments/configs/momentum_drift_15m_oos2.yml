@@ -1,0 +1,31 @@
+mode: "backtest"
+
+strategy:
+  path: "experiments.strategies.momentum_drift:MomentumDrift"
+  params:
+    trade_size: 5.0
+    check_interval_minutes: 1
+    lookback: 2
+    min_drift: 0.01
+    max_spread: 0.06
+    entry_mid_low: 0.51
+    entry_mid_high: 0.80
+    min_hold: 1
+    take_profit_delta: 0.05
+    stop_loss_delta: 0.04
+    reversal_threshold: 0.06
+    convergence_threshold: 0.85
+
+# btc-updown-15m: 4 markets in 2026-03-13 T21 hour (out-of-sample 2)
+condition_ids:
+  - "0xb5e234433040da8c7e8cede1d9c232e7911a006af13d95dc6660b77c1b7fd7a4"  # 1773435600 (21:00)
+  - "0x9bcc5c7b98b4c46204d4d217b061bf8c88bb0c97d02a6d69887260ebf16027e5"  # 1773436500 (21:15)
+  - "0xfe707b5386901bd5eb987fd4f5ca9d87829ccad243373c2101c9c4886d45d860"  # 1773437400 (21:30)
+  - "0x8881d4ce1c68190bd10674d08c6e1361b96239f9a61fa729b5204a5a7fde1111"  # 1773438300 (21:45)
+
+data:
+  hours: ["2026-03-13T21"]
+
+mlflow:
+  experiment: "strategy-dev"
+  parent_run: "momentum-drift-15m"

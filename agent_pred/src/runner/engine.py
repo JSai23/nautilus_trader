@@ -19,6 +19,7 @@ import pandas as pd
 import yaml
 
 from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
+from nautilus_trader.backtest.models import FixedFeeModel
 from nautilus_trader.model.currencies import USDC_POS
 from nautilus_trader.model.enums import AccountType, BookType, OmsType
 from nautilus_trader.model.identifiers import Venue
@@ -197,13 +198,15 @@ def run_backtest(
         )
         engine = BacktestEngine(config=engine_config)
 
-        # Add venue
+        # Add venue with near-zero fixed fee (Polymarket fees are 0-2%, handled separately)
+        fee_model = FixedFeeModel(commission=Money(0.001, USDC_POS))
         engine.add_venue(
             venue=POLYMARKET_VENUE,
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH,
             starting_balances=[Money(config.starting_balance, USDC_POS)],
             book_type=BookType.L2_MBP,
+            fee_model=fee_model,
         )
 
         # Add instruments

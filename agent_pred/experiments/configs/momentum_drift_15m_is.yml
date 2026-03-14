@@ -1,0 +1,31 @@
+mode: "backtest"
+
+strategy:
+  path: "experiments.strategies.momentum_drift:MomentumDrift"
+  params:
+    trade_size: 5.0         # minimum real CLOB size — fills against thin books
+    check_interval_minutes: 1
+    lookback: 2
+    min_drift: 0.01
+    max_spread: 0.06
+    entry_mid_low: 0.51
+    entry_mid_high: 0.80
+    min_hold: 1
+    take_profit_delta: 0.05   # exit earlier while book is liquid
+    stop_loss_delta: 0.04
+    reversal_threshold: 0.06
+    convergence_threshold: 0.85
+
+# btc-updown-15m: 4 markets in 2026-03-13 T20 hour (in-sample)
+condition_ids:
+  - "0x1303f1043876d27ec6f8921f3dd1ede067ab9dd71e4f9cb11b9df57c4f8105ad"  # 1773432000 (20:00)
+  - "0x7922d24808e7c3e6cc9251b088b7936b52e579f23016b7188a87b8fb8da72fae"  # 1773432900 (20:15)
+  - "0x872a522946ba59161cf47c5bc595945c9819fa1ff9980e4b03d868195d785804"  # 1773433800 (20:30)
+  - "0xff5f231e6dc9936281c0cd0d02647bd76f719183690715a4e6a076292c2b3f11"  # 1773434700 (20:45)
+
+data:
+  hours: ["2026-03-13T20"]
+
+mlflow:
+  experiment: "strategy-dev"
+  parent_run: "momentum-drift-15m"

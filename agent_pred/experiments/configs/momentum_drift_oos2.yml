@@ -1,0 +1,28 @@
+# Out-of-sample test 2: btc-updown-4h-1773417600 (2026-03-13 T16:00-20:00 UTC)
+mode: "backtest"
+
+strategy:
+  path: "experiments.strategies.momentum_drift:MomentumDrift"
+  params:
+    trade_size: 100.0
+    check_interval_minutes: 1
+    lookback: 3
+    min_drift: 0.015
+    max_spread: 0.08
+    entry_mid_low: 0.51
+    entry_mid_high: 0.70
+    min_hold: 2
+    take_profit_delta: 0.06
+    stop_loss_delta: 0.04
+    reversal_threshold: 0.04
+    convergence_threshold: 0.95
+
+condition_ids:
+  - "0x4312d2ca358c536efb116e9a34c4a9bbce6d104ededfd3adb6f4406f92785c1a"
+
+data:
+  hours: ["2026-03-13T16", "2026-03-13T17", "2026-03-13T18", "2026-03-13T19"]
+
+mlflow:
+  experiment: "strategy-dev"
+  parent_run: "momentum-drift-oos"
