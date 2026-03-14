@@ -359,8 +359,8 @@ class PolymarketStrategy(Strategy):
         except Exception as e:
             self.log.debug(f"heartbeat write failed: {e}")
 
-    def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
-        instrument_id = deltas.instrument_id
+    def _handle_book_update(self, instrument_id: InstrumentId, ts_event: int) -> None:
+        """Shared handler for order book updates (both singular and plural deltas)."""
         if instrument_id in self._closed:
             return
         self._tick_count_total += 1
@@ -370,7 +370,6 @@ class PolymarketStrategy(Strategy):
             bid = book.best_bid_price()
             ask = book.best_ask_price()
 
-            # Periodic tick logging (Block 9)
             if self._tick_count_total % 500 == 0:
                 meta = self._market_meta.get(instrument_id)
                 label = meta.label if meta else str(instrument_id)
@@ -379,12 +378,11 @@ class PolymarketStrategy(Strategy):
                     f"bid={bid} ask={ask}"
                 )
 
-            # Top-of-book recording (Block 6)
             if self._record_tob and bid is not None and ask is not None:
                 bid_qty = book.best_bid_size()
                 ask_qty = book.best_ask_size()
                 self._tob_records.append({
-                    "timestamp_ns": deltas.ts_event,
+                    "timestamp_ns": ts_event,
                     "instrument_id": str(instrument_id),
                     "bid": float(bid),
                     "ask": float(ask),
@@ -393,6 +391,9 @@ class PolymarketStrategy(Strategy):
                 })
 
         self._check_exit_conditions(instrument_id)
+
+    def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
+        self._handle_book_update(deltas.instrument_id, deltas.ts_event)
 
     def get_top_of_book_df(self) -> pd.DataFrame:
         """Return top-of-book records as a DataFrame."""
@@ -401,39 +402,7 @@ class PolymarketStrategy(Strategy):
         return pd.DataFrame(self._tob_records)
 
     def on_order_book_delta(self, delta: OrderBookDelta) -> None:
-        instrument_id = delta.instrument_id
-        if instrument_id in self._closed:
-            return
-        self._tick_count_total += 1
-
-        book = self.cache.order_book(instrument_id)
-        if book:
-            bid = book.best_bid_price()
-            ask = book.best_ask_price()
-
-            # Periodic tick logging (same as plural handler)
-            if self._tick_count_total % 500 == 0:
-                meta = self._market_meta.get(instrument_id)
-                label = meta.label if meta else str(instrument_id)
-                self.log.info(
-                    f"on_tick #{self._tick_count_total}: {label} "
-                    f"bid={bid} ask={ask}"
-                )
-
-            # Top-of-book recording (same as plural handler)
-            if self._record_tob and bid is not None and ask is not None:
-                bid_qty = book.best_bid_size()
-                ask_qty = book.best_ask_size()
-                self._tob_records.append({
-                    "timestamp_ns": delta.ts_event,
-                    "instrument_id": str(instrument_id),
-                    "bid": float(bid),
-                    "ask": float(ask),
-                    "bid_qty": float(bid_qty) if bid_qty else 0.0,
-                    "ask_qty": float(ask_qty) if ask_qty else 0.0,
-                })
-
-        self._check_exit_conditions(instrument_id)
+        self._handle_book_update(delta.instrument_id, delta.ts_event)
 
     # --- Order callbacks (Block 3 + Block 9) ---
 

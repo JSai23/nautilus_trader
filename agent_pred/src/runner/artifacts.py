@@ -58,37 +58,16 @@ def generate_pnl_curve(fills_df: pd.DataFrame, output_path: Path,
     if fills_df.empty:
         return False
 
-    df = fills_df.copy()
-    df["_px"] = pd.to_numeric(df["last_px"].astype(str), errors="coerce")
-    df["_qty"] = pd.to_numeric(df["last_qty"].astype(str), errors="coerce")
-    df = df.sort_values("ts_event")
+    from runner.tearsheet import _compute_round_trip_pnls
 
-    # Compute cumulative PnL from fill pairs per instrument
-    pnl_events = []
-    pending_buys: dict[str, dict] = {}
-
-    for _, row in df.iterrows():
-        side = str(row["order_side"])
-        iid = str(row["instrument_id"])
-        px = row["_px"]
-        qty = row["_qty"]
-        ts = row["ts_event"]
-
-        if pd.isna(px) or pd.isna(qty):
-            continue
-
-        if side == "BUY":
-            pending_buys[iid] = {"px": px, "qty": qty}
-        elif side == "SELL" and iid in pending_buys:
-            buy = pending_buys.pop(iid)
-            trade_pnl = (px - buy["px"]) * min(qty, buy["qty"])
-            pnl_events.append({"ts": ts, "pnl": trade_pnl})
-
-    if not pnl_events:
+    pnls = _compute_round_trip_pnls(fills_df)
+    if not pnls:
         return False
 
-    pnl_df = pd.DataFrame(pnl_events)
+    pnl_df = pd.DataFrame({"pnl": pnls})
     pnl_df["cumulative_pnl"] = pnl_df["pnl"].cumsum()
+
+    from matplotlib.ticker import MaxNLocator
 
     fig, ax = plt.subplots(figsize=(12, 5))
     ax.plot(range(len(pnl_df)), pnl_df["cumulative_pnl"], linewidth=1.5, color="#2196F3")
@@ -97,6 +76,7 @@ def generate_pnl_curve(fills_df: pd.DataFrame, output_path: Path,
     ax.set_xlabel("Trade #")
     ax.set_ylabel("Cumulative PnL (USDC)")
     ax.set_title("Cumulative PnL Curve")
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(output_path, dpi=100, bbox_inches="tight")
@@ -174,28 +154,13 @@ def generate_trade_distribution(fills_df: pd.DataFrame, output_path: Path) -> bo
     if fills_df.empty:
         return False
 
-    df = fills_df.copy()
-    df["_px"] = pd.to_numeric(df["last_px"].astype(str), errors="coerce")
-    df["_qty"] = pd.to_numeric(df["last_qty"].astype(str), errors="coerce")
-    df = df.sort_values("ts_event")
+    from runner.tearsheet import _compute_round_trip_pnls
 
-    pnls = []
-    pending_buys: dict[str, dict] = {}
-    for _, row in df.iterrows():
-        side = str(row["order_side"])
-        iid = str(row["instrument_id"])
-        px = row["_px"]
-        qty = row["_qty"]
-        if pd.isna(px) or pd.isna(qty):
-            continue
-        if side == "BUY":
-            pending_buys[iid] = {"px": px, "qty": qty}
-        elif side == "SELL" and iid in pending_buys:
-            buy = pending_buys.pop(iid)
-            pnls.append((px - buy["px"]) * min(qty, buy["qty"]))
-
+    pnls = _compute_round_trip_pnls(fills_df)
     if not pnls:
         return False
+
+    from matplotlib.ticker import MaxNLocator
 
     fig, ax = plt.subplots(figsize=(10, 5))
     colors = ["#4CAF50" if p > 0 else "#F44336" for p in pnls]
@@ -204,6 +169,7 @@ def generate_trade_distribution(fills_df: pd.DataFrame, output_path: Path) -> bo
     ax.set_xlabel("Trade #")
     ax.set_ylabel("PnL (USDC)")
     ax.set_title("Trade PnL Distribution")
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.grid(True, alpha=0.3, axis="y")
     fig.tight_layout()
     fig.savefig(output_path, dpi=100, bbox_inches="tight")

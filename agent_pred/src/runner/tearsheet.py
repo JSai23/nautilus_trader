@@ -10,7 +10,6 @@ only reliable source across all round trips.
 
 from __future__ import annotations
 
-import math
 from dataclasses import asdict, dataclass
 
 import pandas as pd
@@ -117,12 +116,14 @@ def compute_tearsheet(
     elif total_wins > 0:
         ts.profit_factor = float("inf")
 
-    # Sharpe ratio from per-trade PnL (annualized)
+    # Per-trade Sharpe ratio (mean/std, no annualization).
+    # Annualizing with sqrt(252) assumes daily returns, but trades happen
+    # at irregular intraday intervals — per-trade ratio is more honest.
     if len(pnls) > 1:
         mean_pnl = float(pnl_series.mean())
         std_pnl = float(pnl_series.std())
         if std_pnl > 0:
-            ts.sharpe_ratio = round(mean_pnl / std_pnl * math.sqrt(252), 4)
+            ts.sharpe_ratio = round(mean_pnl / std_pnl, 4)
 
     # Max drawdown from cumulative PnL
     cum_pnl = pnl_series.cumsum()
