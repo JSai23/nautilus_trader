@@ -1,4 +1,4 @@
-"""Shared test fixtures and helpers for agent_pred tests."""
+"""Shared test fixtures for agent_pred tests."""
 
 import json
 import logging
@@ -12,11 +12,42 @@ import pyarrow.parquet as pq
 
 from pmxt.reader import file_url
 from universe.gamma import fetch_market_clob
+from universe.instruments import build_instrument_maps
 
 log = logging.getLogger(__name__)
 
 TEST_HOUR = "2026-03-09T09"
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
+
+# ---------------------------------------------------------------------------
+# Tier 2 fixtures — bundled data, no network
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def bundled_parquet_path():
+    """Path to the bundled test parquet file (committed to repo)."""
+    path = FIXTURES_DIR / "test_hour.parquet"
+    assert path.exists(), f"Bundled test data missing: {path}"
+    return path
+
+
+@pytest.fixture(scope="session")
+def bundled_market_infos():
+    """Hardcoded market metadata for bundled test data."""
+    with open(FIXTURES_DIR / "market_metadata.json") as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="session")
+def bundled_instruments(bundled_market_infos):
+    """Instruments + IDs + market_ids built from bundled market metadata."""
+    return build_instrument_maps(bundled_market_infos)
+
+
+# ---------------------------------------------------------------------------
+# Tier 3 fixtures — network required
+# ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
 def _pmxt_local_path():
@@ -54,20 +85,8 @@ def volatile_market(_pmxt_local_path):
 
 
 def _adapt_metadata_for_testing(metadata: dict, hour: str) -> dict:
-    """Adapt real API metadata for test use.
-
-    Real metadata from CLOB API may have constraints that prevent test
-    strategies from executing (resolved markets, high minimum order sizes).
-    This adjusts metadata so tests exercise strategy logic correctly:
-
-    1. Extends end_date_iso past the test hour (prevents resolution timer
-       from firing immediately on already-resolved markets)
-    2. Sets minimum_order_size to "1" (tests use trade_size=1.0, but real
-       markets require 5+ — we're testing strategy logic, not exchange limits)
-    """
-    metadata = dict(metadata)  # shallow copy to avoid mutating caller's dict
-
-    # Extend end_date if market resolved before test data window
+    """Adapt real API metadata for test use."""
+    metadata = dict(metadata)
     end_date = metadata.get("end_date_iso", "")
     if end_date:
         try:
@@ -76,18 +95,9 @@ def _adapt_metadata_for_testing(metadata: dict, hour: str) -> dict:
             if end_dt <= hour_dt:
                 extended = hour_dt.replace(hour=23, minute=59, second=59)
                 metadata["end_date_iso"] = extended.strftime("%Y-%m-%dT%H:%M:%SZ")
-                log.info(
-                    "Extended end_date for %s from %s to %s (test override)",
-                    metadata["condition_id"][:16],
-                    end_date,
-                    metadata["end_date_iso"],
-                )
         except (ValueError, TypeError):
             pass
-
-    # Override minimum_order_size for test compatibility
     metadata["minimum_order_size"] = "1"
-
     return metadata
 
 
@@ -95,15 +105,11 @@ def _resolve_test_metadata(condition_id: str, tokens: set[str], hour: str) -> di
     """Resolve market metadata for tests: CLOB API -> fabricated fallback."""
     clob = fetch_market_clob(condition_id)
     if clob:
-        log.info("Fetched CLOB API metadata for %s", condition_id[:16])
         return _adapt_metadata_for_testing(clob, hour)
-
-    log.warning("No API metadata for %s — using fabricated metadata", condition_id[:16])
     token_list = []
     for i, tid in enumerate(sorted(tokens)):
         outcome = "Yes" if i == 0 else "No"
         token_list.append({"token_id": tid, "outcome": outcome})
-
     return {
         "condition_id": condition_id,
         "question": f"Test market {condition_id[:16]}",
@@ -117,17 +123,11 @@ def _resolve_test_metadata(condition_id: str, tokens: set[str], hour: str) -> di
 
 
 def _discover_market_with_tokens_from_pf(pf: pq.ParquetFile, hour: str) -> dict:
-    """Discover a market from a pre-loaded ParquetFile.
-
-    Reads the first row group, finds the market with the most activity,
-    and builds a market_info dict suitable for instrument construction.
-    """
+    """Discover a market from a pre-loaded ParquetFile."""
     table = pf.read_row_group(0, columns=["market_id", "update_type", "data"])
     rows = table.to_pylist()
-
     market_tokens: dict[str, set[str]] = {}
     market_rows: dict[str, list[dict]] = {}
-
     for row in rows[:5000]:
         data = json.loads(row["data"])
         mid = row["market_id"]
@@ -139,29 +139,15 @@ def _discover_market_with_tokens_from_pf(pf: pq.ParquetFile, hour: str) -> dict:
             market_rows[mid] = []
         market_tokens[mid].add(token_id)
         market_rows[mid].append(row)
-
     best_market = max(market_rows, key=lambda mid: len(market_rows[mid]))
     tokens = market_tokens[best_market]
-
-    log.info(
-        "Discovered market %s with %d tokens, %d rows",
-        best_market[:16],
-        len(tokens),
-        len(market_rows[best_market]),
-    )
-
     return _resolve_test_metadata(best_market, tokens, hour)
 
 
 def _discover_volatile_market_from_pf(pf: pq.ParquetFile, hour: str) -> dict:
-    """Discover a volatile market from a pre-loaded ParquetFile.
-
-    Reads all row groups and finds a market where max_bid > min_ask
-    for at least one token (price moved enough for FOK wins).
-    """
+    """Discover a volatile market from a pre-loaded ParquetFile."""
     token_stats: dict[str, dict] = {}
     market_tokens: dict[str, set[str]] = {}
-
     for rg_idx in range(pf.metadata.num_row_groups):
         table = pf.read_row_group(rg_idx, columns=["market_id", "data"])
         for row in table.to_pylist():
@@ -181,14 +167,12 @@ def _discover_volatile_market_from_pf(pf: pq.ParquetFile, hour: str) -> dict:
             if mid not in market_tokens:
                 market_tokens[mid] = set()
             market_tokens[mid].add(token_id)
-
             if token_id not in token_stats:
                 token_stats[token_id] = {"min_ask": ask, "max_bid": bid, "market_id": mid}
             else:
                 s = token_stats[token_id]
                 s["min_ask"] = min(s["min_ask"], ask)
                 s["max_bid"] = max(s["max_bid"], bid)
-
     best_mid = None
     best_gap = 0.0
     for tid, stats in token_stats.items():
@@ -199,13 +183,9 @@ def _discover_volatile_market_from_pf(pf: pq.ParquetFile, hour: str) -> dict:
         if gap > best_gap:
             best_gap = gap
             best_mid = mid
-
     if best_mid is None:
         raise RuntimeError("No volatile market found in data")
-
     tokens = market_tokens[best_mid]
-    log.info("Volatile market %s, gap=%.3f, %d tokens", best_mid[:16], best_gap, len(tokens))
-
     return _resolve_test_metadata(best_mid, tokens, hour)
 
 
@@ -216,16 +196,5 @@ def discover_market_with_tokens(hour: str) -> dict:
     f = fs.open(url)
     pf = pq.ParquetFile(f)
     result = _discover_market_with_tokens_from_pf(pf, hour)
-    f.close()
-    return result
-
-
-def discover_volatile_market(hour: str) -> dict:
-    """Discover a volatile market from PMXT data (HTTP download)."""
-    url = file_url(hour)
-    fs = fsspec.filesystem("http")
-    f = fs.open(url)
-    pf = pq.ParquetFile(f)
-    result = _discover_volatile_market_from_pf(pf, hour)
     f.close()
     return result

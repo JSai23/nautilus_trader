@@ -16,6 +16,7 @@ from universe.gamma import (
 )
 
 
+@pytest.mark.network
 class TestFetchMarkets:
     """Test raw Gamma API fetching with real requests."""
 
@@ -46,6 +47,7 @@ class TestFetchMarkets:
         assert len(results) <= 2
 
 
+@pytest.mark.network
 class TestServerSideFilters:
     """Test that server-side filters are pushed to the Gamma API."""
 
@@ -89,6 +91,7 @@ class TestServerSideFilters:
         assert volumes == sorted(volumes, reverse=True), "Results not sorted by volume desc"
 
 
+@pytest.mark.network
 class TestFetchAllMarkets:
     """Test paginated fetching with client-side filters."""
 
@@ -195,6 +198,7 @@ class TestGammaToMetadata:
         assert metadata["tokens"][0]["token_id"] == "token_a"
 
 
+@pytest.mark.network
 class TestDiscoverMarkets:
     """Test end-to-end discovery pipeline with real Gamma API."""
 
@@ -248,6 +252,7 @@ class TestDiscoverMarkets:
 _KNOWN_CID = "0x884c293e9eeeda6065f05e75fca16fd4d67b5fb911ee854b1bed58c785d3b33d"
 
 
+@pytest.mark.network
 class TestFetchMarketClob:
     """Test CLOB API direct lookup with real requests."""
 

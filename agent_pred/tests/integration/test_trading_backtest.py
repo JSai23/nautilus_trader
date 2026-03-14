@@ -93,6 +93,7 @@ def build_test_engine(
     return engine, instrument_id_strs, start_dt, end_dt
 
 
+@pytest.mark.network
 class TestTradingBacktest:
     @pytest.mark.timeout(300)
     def test_simple_test_produces_fills(self, market_with_tokens, pmxt_local_path):

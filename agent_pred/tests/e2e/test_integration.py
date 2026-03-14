@@ -15,7 +15,7 @@ from nautilus_trader.model.enums import AccountType, BookType, OmsType
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Money
 
-from conftest import discover_market_with_tokens
+from tests.conftest import discover_market_with_tokens
 from pmxt.generator import pmxt_data_generator
 from universe.instruments import build_instrument_maps
 from experiments.strategies.log_only import LogOnlyStrategy, LogOnlyStrategyConfig
@@ -27,6 +27,7 @@ TEST_HOUR = "2026-03-09T09"
 POLYMARKET_VENUE = Venue("POLYMARKET")
 
 
+@pytest.mark.network
 class TestEndToEnd:
     @pytest.mark.timeout(300)
     def test_pmxt_to_backtest_engine(self):

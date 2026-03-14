@@ -26,3 +26,6 @@ include = ["runner*", "strategy*", "pmxt*", "universe*", "discovery*", "experime
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
+markers = [
+    "network: requires network access (deselect with -m 'not network')",
+]

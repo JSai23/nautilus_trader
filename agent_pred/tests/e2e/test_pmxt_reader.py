@@ -24,6 +24,7 @@ class TestFileUrl:
         assert url == "https://r2.pmxt.dev/polymarket_orderbook_2026-03-09T14.parquet"
 
 
+@pytest.mark.network
 class TestReadRemoteFiltered:
     @pytest.mark.timeout(120)
     def test_can_stream_and_filter(self):
@@ -78,6 +79,7 @@ class TestReadRemoteFiltered:
         assert total_rows == 0
 
 
+@pytest.mark.network
 class TestCacheFilteredData:
     @pytest.mark.timeout(180)
     def test_cache_creates_per_market_parquet(self):
