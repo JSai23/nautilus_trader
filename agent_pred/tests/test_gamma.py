@@ -244,7 +244,7 @@ class TestDiscoverMarkets:
             assert "will" in m["slug"].lower()
 
 
-# Known condition_id from timer_momentum.yml for CLOB API tests
+# Known condition_id from momentum_drift.yml for CLOB API tests
 _KNOWN_CID = "0x884c293e9eeeda6065f05e75fca16fd4d67b5fb911ee854b1bed58c785d3b33d"
 
 

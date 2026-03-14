@@ -31,7 +31,7 @@ A backtesting and paper trading framework for Polymarket prediction markets, bui
 cd agent_pred && uv sync
 
 # Run a backtest
-uv run python scripts/run_backtest.py experiments/configs/timer_momentum.yml
+uv run python scripts/run_backtest.py experiments/configs/momentum_drift.yml
 
 # Run tests
 uv run pytest tests/ -x -q

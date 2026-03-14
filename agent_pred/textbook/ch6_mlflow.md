@@ -16,7 +16,7 @@ Experiment (strategy concept)
 |-------|---------|-------------------|
 | Experiment | `orderbook-imbalance` | A strategy idea you're exploring |
 | Parent Run | `v1-simple-threshold` | A specific approach or parameter set |
-| Child Run | `TimerMomentumStrategy_4m_2026-03-09T09..2026-03-09T12` | One backtest execution |
+| Child Run | `MomentumDrift_4m_2026-03-09T09..2026-03-09T12` | One backtest execution |
 
 This hierarchy lets you compare variants within a strategy (which threshold works best?) and compare strategies across experiments (does imbalance beat momentum?).
 
@@ -66,7 +66,7 @@ The entire results directory is uploaded: `tearsheet.json`, `orders.csv`, `fills
 
 ### Run Name
 
-Child runs get a descriptive name: `{StrategyName}_{N}m_{date_range}`. Example: `TimerMomentumStrategy_4m_2026-03-09T09..2026-03-09T12`. This makes the MLflow UI scannable without clicking into each run.
+Child runs get a descriptive name: `{StrategyName}_{N}m_{date_range}`. Example: `MomentumDrift_4m_2026-03-09T09..2026-03-09T12`. This makes the MLflow UI scannable without clicking into each run.
 
 ## The Logger (`src/runner/mlflow_logger.py`)
 

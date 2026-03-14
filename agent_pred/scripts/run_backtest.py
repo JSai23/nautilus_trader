@@ -3,7 +3,7 @@
 
 Usage:
     uv run python scripts/run_backtest.py experiments/configs/example_backtest.yml
-    uv run python scripts/run_backtest.py experiments/configs/paper_momentum.yml
+    uv run python scripts/run_backtest.py experiments/configs/paper_tick.yml
     uv run python scripts/run_backtest.py experiments/configs/example_backtest.yml --results-dir results/my_run
 
 Market resolution:

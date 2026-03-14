@@ -7,7 +7,7 @@ How the framework runs strategies against live Polymarket data with simulated ex
 Paper trading uses real market data but simulated fills. The same strategy class that runs in backtests runs here — no code changes.
 
 ```bash
-uv run python scripts/run_backtest.py experiments/configs/paper_momentum.yml
+uv run python scripts/run_backtest.py experiments/configs/paper_tick.yml
 ```
 
 The `scripts/run_backtest.py` entry point dispatches on `mode`:
@@ -20,7 +20,7 @@ The `scripts/run_backtest.py` entry point dispatches on `mode`:
 mode: "paper"
 
 strategy:
-  path: "experiments.strategies.timer_momentum:TimerMomentumStrategy"
+  path: "experiments.strategies.momentum_drift:MomentumDrift"
   params:
     trade_size: 5.0
     check_interval_minutes: 1

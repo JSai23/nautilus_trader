@@ -6,7 +6,7 @@ How to configure, run, and interpret backtest results.
 
 ```bash
 cd agent_pred
-uv run python scripts/run_backtest.py experiments/configs/timer_momentum.yml
+uv run python scripts/run_backtest.py experiments/configs/momentum_drift.yml
 ```
 
 This parses the config, discovers markets, streams data, runs the strategy, prints a tearsheet, and saves results.
@@ -17,7 +17,7 @@ This parses the config, discovers markets, streams data, runs the strategy, prin
 mode: "backtest"
 
 strategy:
-  path: "experiments.strategies.timer_momentum:TimerMomentumStrategy"
+  path: "experiments.strategies.momentum_drift:MomentumDrift"
   params:
     trade_size: 5.0
     check_interval_minutes: 1
@@ -140,7 +140,7 @@ tearsheet = compute_tearsheet(closed_positions_df, fills_df)
 | `num_trades` | Number of fills |
 | `num_positions` | Number of position entries |
 | `win_rate` | Fraction of positions with positive PnL |
-| `sharpe_ratio` | Annualized: mean(pnl) / std(pnl) * sqrt(252) |
+| `sharpe_ratio` | Per-trade: mean(pnl) / std(pnl) |
 | `max_drawdown` | Largest peak-to-trough cumulative PnL decline |
 | `avg_trade_pnl` | Mean PnL per position |
 | `profit_factor` | Sum(winning PnL) / abs(Sum(losing PnL)) |
