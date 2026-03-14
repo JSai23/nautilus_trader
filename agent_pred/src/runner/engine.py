@@ -135,6 +135,8 @@ class RunResult:
     elapsed_seconds: float = 0.0
     success: bool = True
     error: str | None = None
+    strategy: Any = None  # For test access to _fill_records, _log_buffer, etc.
+    engine: Any = None  # For cross-validation via engine.cache.positions()
 
 
 
@@ -300,6 +302,8 @@ def run_backtest(
             fills_df=fills_df,
             positions_df=positions_df,
             elapsed_seconds=elapsed,
+            strategy=strategy,
+            engine=engine,
         )
 
         # Save artifacts

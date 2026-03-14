@@ -130,10 +130,21 @@ class PolymarketStrategy(Strategy):
         # Fill records — in-strategy tracking to avoid cache eviction loss
         self._fill_records: list[dict] = []
 
+        # Log buffer — structured event log for test verification
+        self._log_buffer: list[dict] = []
+
         # Heartbeat (Block 5) — engine injects _heartbeat_dir before run
         self._heartbeat_dir: Path | None = None
         self._heartbeat_run_id: str = ""
         self._heartbeat_start_time: float = 0.0
+
+    def _log_event(self, event_type: str, **kwargs) -> None:
+        """Append structured event to log buffer for test verification."""
+        self._log_buffer.append({
+            "type": event_type,
+            "ts": self.clock.timestamp_ns(),
+            **kwargs,
+        })
 
     def on_start(self) -> None:
         # For dynamic instruments, set up a periodic cache poll to detect
@@ -149,6 +160,8 @@ class PolymarketStrategy(Strategy):
         for instrument_id in self._instrument_ids:
             self._subscribe_instrument(instrument_id)
             self._hydrate_market_meta(instrument_id)
+
+        self._log_event("START", instruments=len(self._instrument_ids))
 
         # Log startup summary (Block 9)
         self.log.info(
@@ -319,6 +332,7 @@ class PolymarketStrategy(Strategy):
 
         if not self._data_ended:
             self._interval_count += 1
+            self._log_event("INTERVAL", count=self._interval_count)
             if self._interval_count % 10 == 1:
                 active = len(self._instrument_ids) - len(self._closed) - len(self._exiting)
                 self.log.info(
@@ -408,6 +422,13 @@ class PolymarketStrategy(Strategy):
 
     def on_order_filled(self, event: OrderFilled) -> None:
         self._orders_filled += 1
+        self._log_event(
+            "FILL",
+            instrument_id=str(event.instrument_id),
+            side=event.order_side.name,
+            qty=float(event.last_qty),
+            price=float(event.last_px),
+        )
         meta = self._market_meta.get(event.instrument_id)
         label = meta.label if meta else str(event.instrument_id)
         self.log.info(
@@ -518,6 +539,7 @@ class PolymarketStrategy(Strategy):
             return
 
         self._exiting.add(instrument_id)
+        self._log_event("EXIT", instrument_id=str(instrument_id), reason=reason)
         meta = self._market_meta.get(instrument_id)
         label = meta.label if meta else str(instrument_id)
         # Log position size and unrealized PnL if available
