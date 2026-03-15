@@ -6,7 +6,7 @@ How to configure, run, and interpret backtest results.
 
 ```bash
 cd agent_pred
-uv run python scripts/run_backtest.py experiments/configs/momentum_drift.yml
+uv run python scripts/run_backtest.py experiments/configs/tick_always.yml
 ```
 
 This parses the config, discovers markets, streams data, runs the strategy, prints a tearsheet, and saves results.

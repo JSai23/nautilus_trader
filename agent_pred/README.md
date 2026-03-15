@@ -31,7 +31,7 @@ A backtesting and paper trading framework for Polymarket prediction markets, bui
 cd agent_pred && uv sync
 
 # Run a backtest
-uv run python scripts/run_backtest.py experiments/configs/momentum_drift.yml
+uv run python scripts/run_backtest.py experiments/configs/tick_always.yml
 
 # Run tests
 uv run pytest tests/ -x -q
@@ -135,8 +135,6 @@ agent_pred/
 │   │   ├── log_only.py         #     Test harness: logs data, no trades
 │   │   └── simple_test.py      #     Test harness: places one order
 │   └── configs/                #   Experiment config YAMLs
-│       ├── momentum_drift.yml  #     Main strategy config (btc-updown-4h)
-│       ├── momentum_drift_*.yml#     IS/OOS variants for validation
 │       ├── tick_always.yml     #     Baseline tick config
 │       ├── timer_always.yml    #     Baseline timer config
 │       └── paper_tick.yml      #     Paper trading config

@@ -31,7 +31,7 @@ agent_pred/
 
 ```bash
 # Run backtest
-uv run python scripts/run_backtest.py experiments/configs/momentum_drift.yml
+uv run python scripts/run_backtest.py experiments/configs/tick_always.yml
 
 # Run tests (81 tests, ~6 min — downloads PMXT data on first run)
 uv run pytest tests/ -x -q

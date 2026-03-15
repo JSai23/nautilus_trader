@@ -28,9 +28,9 @@ Removed `sqrt(252)` annualization. Now reports per-trade Sharpe (mean/std) with 
 
 ---
 
-## BUG-005: Agent loop CLI flags are stale — FIXED
+## BUG-005: Agent loop CLI flags are stale — INVALID
 
-`run.sh` already used correct `--append-system-prompt "$(cat ...)"` form. Fixed `headless-reference.md` which still documented the nonexistent `--system-prompt-file`, `--append-system-prompt-file`, and `--max-turns` flags.
+`--append-system-prompt-file` IS a valid claude CLI flag (not shown in `--help` but works). The original bug report was wrong. The run.sh usage was correct all along. headless-reference.md was updated unnecessarily but the content is still accurate.
 
 ---
 
