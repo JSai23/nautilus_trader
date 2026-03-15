@@ -1,0 +1,22 @@
+mode: "backtest"
+
+strategy:
+  path: "experiments.strategies.tick_always:TickAlways"
+  params:
+    instrument_ids: []
+    trade_size: 5.0
+    buy_after_ticks: 3
+    sell_after_ticks: 10
+    record_top_of_book: true
+
+universe:
+  slug_contains: "btc-updown-4h"
+  active: true
+  max_markets: 3
+
+data:
+  hours: ["2026-03-13T10", "2026-03-13T11"]
+
+mlflow:
+  experiment: "testing"
+  parent_run: "tick-always"

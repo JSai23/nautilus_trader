@@ -1,0 +1,18 @@
+# Generated data
+data/
+results/
+mlruns/
+mlflow.db
+
+# Python build artifacts
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Dev loop artifacts
+agents/
+.script_logs/
+
+# Allow bundled test fixtures (root .gitignore blocks *.parquet)
+!tests/fixtures/test_hour.parquet

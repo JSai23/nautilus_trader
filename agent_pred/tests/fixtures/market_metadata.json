@@ -1,0 +1,48 @@
+[
+  {
+    "condition_id": "0x884c293e9eeeda6065f05e75fca16fd4d67b5fb911ee854b1bed58c785d3b33d",
+    "question": "Counter-Strike: 100 Thieves vs FOKUS - Map 1 Winner",
+    "slug": "cs2-100t-fokus-2026-03-09-game1",
+    "category": "",
+    "minimum_tick_size": "0.001",
+    "minimum_order_size": "1",
+    "end_date_iso": "2027-12-31T00:00:00Z",
+    "maker_base_fee": "0",
+    "taker_base_fee": "0",
+    "tokens": [
+      {
+        "token_id": "94976418665676842918954529245565792264701493176404192713573155311693631419115",
+        "outcome": "100 Thieves"
+      },
+      {
+        "token_id": "28652212999380296779791412410026915557453474215620405233882143104381417896009",
+        "outcome": "FOKUS"
+      }
+    ],
+    "active": true,
+    "closed": true
+  },
+  {
+    "condition_id": "0x48e27d67c53f7680288ebd6f55a4a66068555d67746d8ab423afc42316d7f9bb",
+    "question": "Will the S&P 500 Index gain at least 5% on any day in Q1?",
+    "slug": "will-the-sp-500-index-gain-at-least-5-on-any-day-in-q1",
+    "category": "",
+    "minimum_tick_size": "0.001",
+    "minimum_order_size": "1",
+    "end_date_iso": "2027-12-31T00:00:00Z",
+    "maker_base_fee": "0",
+    "taker_base_fee": "0",
+    "tokens": [
+      {
+        "token_id": "60358903016061427225129278789510365257071068085780269970310584924397682210517",
+        "outcome": "Yes"
+      },
+      {
+        "token_id": "59309216153046217953832073607876047721424820895620255586958089558038593787546",
+        "outcome": "No"
+      }
+    ],
+    "active": true,
+    "closed": false
+  }
+]
